@@ -1,0 +1,4601 @@
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/audit2allow/audit2allow policycoreutils-2.0.83/audit2allow/audit2allow
+--- nsapolicycoreutils/audit2allow/audit2allow	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/audit2allow/audit2allow	2010-07-30 13:50:40.000000000 -0400
+@@ -1,4 +1,4 @@
+-#! /usr/bin/python -E
++#! /usr/bin/python -Es
+ # Authors: Karl MacMillan <kmacmillan@mentalrootkit.com>
+ #
+ # Copyright (C) 2006-2007  Red Hat
+@@ -28,6 +28,7 @@
+ import sepolgen.defaults as defaults
+ import sepolgen.module as module
+ from sepolgen.sepolgeni18n import _
++import selinux.audit2why as audit2why
+ 
+ class AuditToPolicy:
+     VERSION = "%prog .1"
+@@ -46,6 +47,7 @@
+                           help="audit messages since last boot conflicts with -i")
+         parser.add_option("-a", "--all", action="store_true", dest="audit", default=False,
+                           help="read input from audit log - conflicts with -i")
++        parser.add_option("-p", "--policy", dest="policy", default=None, help="Policy file to use for analysis")
+         parser.add_option("-d", "--dmesg", action="store_true", dest="dmesg", default=False,
+                           help="read input from dmesg - conflicts with --all and --input")
+         parser.add_option("-i", "--input", dest="input",
+@@ -231,63 +233,44 @@
+ 
+     def __output_audit2why(self):
+             import selinux
+-            import selinux.audit2why as audit2why
+             import seobject
+-            audit2why.init()
+             for i in self.__parser.avc_msgs:
+-                rc, bools = audit2why.analyze(i.scontext.to_string(), i.tcontext.to_string(), i.tclass, i.accesses)
+-                if rc >= 0:
++                if i.type >= 0:
+                     print "%s\n\tWas caused by:" % i.message
+-                if rc == audit2why.NOPOLICY:
+-                    raise RuntimeError("Must call policy_init first")
+-                if rc == audit2why.BADTCON:
+-                    print "Invalid Target Context %s\n" % i.tcontext
+-                    continue
+-                if rc == audit2why.BADSCON:
+-                    print "Invalid Source Context %s\n" % i.scontext
+-                    continue
+-                if rc == audit2why.BADSCON:
+-                    print "Invalid Type Class %s\n" % i.tclass
+-                    continue
+-                if rc == audit2why.BADPERM:
+-                    print "Invalid permission %s\n" % i.accesses
+-                    continue
+-                if rc == audit2why. BADCOMPUTE:
+-                    raise RuntimeError("Error during access vector computation")
+-                if rc == audit2why.ALLOW:
++                if i.type == audit2why.ALLOW:
+                     print "\t\tUnknown - would be allowed by active policy\n",
+                     print "\t\tPossible mismatch between this policy and the one under which the audit message was generated.\n"
+                     print "\t\tPossible mismatch between current in-memory boolean settings vs. permanent ones.\n"
+                     continue
+-                if rc == audit2why.DONTAUDIT:
++                if i.type == audit2why.DONTAUDIT:
+                     print "\t\tUnknown - should be dontaudit'd by active policy\n",
+                     print "\t\tPossible mismatch between this policy and the one under which the audit message was generated.\n"
+                     print "\t\tPossible mismatch between current in-memory boolean settings vs. permanent ones.\n"
+                     continue
+-                if rc == audit2why.BOOLEAN:
+-                    if len(bools) > 1:
++                if i.type == audit2why.BOOLEAN:
++                    if len(i.bools) > 1:
+                         print "\tOne of the following booleans was set incorrectly."
+-                        for b in bools:
++                        for b in i.bools:
+                             print "\tDescription:\n\t%s\n"  % seobject.boolean_desc(b[0])
+                             print "\tAllow access by executing:\n\t# setsebool -P %s %d"  % (b[0], b[1])
+                     else:
+-                        print "\tThe boolean %s was set incorrectly. " % (bools[0][0])
+-                        print "\tDescription:\n\t%s\n"  % seobject.boolean_desc(bools[0][0])
+-                        print "\tAllow access by executing:\n\t# setsebool -P %s %d"  % (bools[0][0], bools[0][1])
++                        print "\tThe boolean %s was set incorrectly. " % (i.bools[0][0])
++                        print "\tDescription:\n\t%s\n"  % seobject.boolean_desc(i.bools[0][0])
++                        print "\tAllow access by executing:\n\t# setsebool -P %s %d"  % (i.bools[0][0], i.bools[0][1])
+                     continue
+ 
+-                if rc == audit2why.TERULE:
++                if i.type == audit2why.TERULE:
+                     print "\t\tMissing type enforcement (TE) allow rule.\n"
+                     print "\t\tYou can use audit2allow to generate a loadable module to allow this access.\n"
+                     continue
+ 
+-                if rc == audit2why.CONSTRAINT:
++                if i.type == audit2why.CONSTRAINT:
+                     print "\t\tPolicy constraint violation.\n"
+                     print "\t\tMay require adding a type attribute to the domain or type to satisfy the constraint.\n"
+                     print "\t\tConstraints are defined in the policy sources in policy/constraints (general), policy/mcs (MCS), and policy/mls (MLS).\n"
+                     continue
+ 
+-                if rc == audit2why.RBAC:
++                if i.type == audit2why.RBAC:
+                     print "\t\tMissing role allow rule.\n"
+                     print "\t\tAdd an allow rule for the role pair.\n"
+                     continue
+@@ -350,11 +333,19 @@
+     def main(self):
+         try:
+             self.__parse_options()
++            if self.__options.policy:
++                audit2why.init(self.__options.policy)
++            else:
++                audit2why.init()
++
+             self.__read_input()
+             self.__process_input()
+             self.__output()
+         except KeyboardInterrupt:
+             sys.exit(0)
++        except ValueError, e:
++            print e
++            sys.exit(1)
+ 
+ if __name__ == "__main__":
+     app = AuditToPolicy()
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/audit2allow/audit2allow.1 policycoreutils-2.0.83/audit2allow/audit2allow.1
+--- nsapolicycoreutils/audit2allow/audit2allow.1	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/audit2allow/audit2allow.1	2010-07-30 13:50:40.000000000 -0400
+@@ -66,6 +66,9 @@
+ .B "\-M <modulename>" 
+ Generate loadable module package, conflicts with -o
+ .TP
++.B "\-p <policyfile>"  | "\-\-policy <policyfile>"
++Policy file to use for analysis
++.TP
+ .B "\-o <outputfile>"  | "\-\-output <outputfile>"
+ append output to 
+ .I <outputfile>
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/audit2allow/sepolgen-ifgen policycoreutils-2.0.83/audit2allow/sepolgen-ifgen
+--- nsapolicycoreutils/audit2allow/sepolgen-ifgen	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/audit2allow/sepolgen-ifgen	2010-07-30 13:50:40.000000000 -0400
+@@ -1,4 +1,4 @@
+-#! /usr/bin/python -E
++#! /usr/bin/python -Es
+ #
+ # Authors: Karl MacMillan <kmacmillan@mentalrootkit.com>
+ #
+@@ -28,6 +28,10 @@
+ 
+ import sys
+ import os
++import tempfile
++import subprocess
++
++import selinux
+ 
+ import sepolgen.refparser as refparser
+ import sepolgen.defaults as defaults
+@@ -35,6 +39,7 @@
+ 
+ 
+ VERSION = "%prog .1"
++ATTR_HELPER = "/usr/bin/sepolgen-ifgen-attr-helper"
+ 
+ def parse_options():
+     from optparse import OptionParser
+@@ -44,14 +49,43 @@
+                       help="filename to store output")
+     parser.add_option("-i", "--interfaces", dest="headers", default=defaults.headers(),
+                       help="location of the interface header files")
++    parser.add_option("-a", "--attribute_info", dest="attribute_info")
+     parser.add_option("-v", "--verbose", action="store_true", default=False,
+                       help="print debuging output")
+     parser.add_option("-d", "--debug", action="store_true", default=False,
+                      help="extra debugging output")
++    parser.add_option("--no_attrs", action="store_true", default=False,
++                      help="do not retrieve attribute access from kernel policy")
+     options, args = parser.parse_args()
+     
+     return options
+ 
++def get_attrs():
++    try:
++        policy_path = selinux.selinux_binary_policy_path() + "." + str(selinux.security_policyvers())
++        outfile = tempfile.NamedTemporaryFile()
++    except IOError, e:
++        sys.stderr.write("could not open attribute output file\n")
++        return None
++    except OSError:
++        # SELinux Disabled Machine
++        return None
++
++    fd = open("/dev/null","w")
++    ret = subprocess.Popen([ATTR_HELPER, policy_path, outfile.name], stdout=fd).wait()
++    fd.close()
++    if ret != 0:
++        sys.stderr.write("could not run attribute helper")
++        return None
++
++    attrs = interfaces.AttributeSet()
++    try:
++        attrs.from_file(outfile)
++    except:
++        print "error parsing attribute info"
++        return None
++
++    return attrs
+ 
+ def main():
+     options = parse_options()
+@@ -68,6 +102,14 @@
+     else:
+         log = None
+ 
++    # Get the attibutes from the binary
++    attrs = None
++    if not options.no_attrs:
++        attrs = get_attrs()
++        if attrs is None:
++            return 1
++        
++    # Parse the headers
+     try:
+         headers = refparser.parse_headers(options.headers, output=log, debug=options.debug)
+     except ValueError, e:
+@@ -76,7 +118,7 @@
+         return 1
+ 
+     if_set = interfaces.InterfaceSet(output=log)
+-    if_set.add_headers(headers)
++    if_set.add_headers(headers, attributes=attrs)
+     if_set.to_file(f)
+     f.close()
+ 
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/Makefile policycoreutils-2.0.83/Makefile
+--- nsapolicycoreutils/Makefile	2010-06-16 08:03:38.000000000 -0400
++++ policycoreutils-2.0.83/Makefile	2010-07-30 13:50:40.000000000 -0400
+@@ -1,4 +1,4 @@
+-SUBDIRS = setfiles semanage load_policy newrole run_init sandbox secon audit2allow audit2why scripts sestatus semodule_package semodule semodule_link semodule_expand semodule_deps setsebool po
++SUBDIRS = setfiles semanage semanage/default_encoding load_policy newrole run_init sandbox secon audit2allow audit2why scripts sestatus semodule_package semodule semodule_link semodule_expand semodule_deps sepolgen-ifgen setsebool po gui
+ 
+ INOTIFYH = $(shell ls /usr/include/sys/inotify.h 2>/dev/null)
+ 
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/newrole/newrole.c policycoreutils-2.0.83/newrole/newrole.c
+--- nsapolicycoreutils/newrole/newrole.c	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/newrole/newrole.c	2010-07-30 13:50:40.000000000 -0400
+@@ -1334,6 +1334,9 @@
+ 
+ 	if (send_audit_message(1, old_context, new_context, ttyn))
+ 		goto err_close_pam_session;
++	freecon(old_context); old_context=NULL;
++	freecon(new_context); new_context=NULL;
++
+ #ifdef NAMESPACE_PRIV
+ 	if (transition_to_caller_uid())
+ 		goto err_close_pam_session;
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/restorecond/Makefile policycoreutils-2.0.83/restorecond/Makefile
+--- nsapolicycoreutils/restorecond/Makefile	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/restorecond/Makefile	2010-07-30 13:50:40.000000000 -0400
+@@ -1,17 +1,28 @@
+ # Installation directories.
+ PREFIX ?= ${DESTDIR}/usr
+ SBINDIR ?= $(PREFIX)/sbin
++LIBDIR ?= $(PREFIX)/lib
+ MANDIR = $(PREFIX)/share/man
++AUTOSTARTDIR = $(DESTDIR)/etc/xdg/autostart
++DBUSSERVICEDIR = $(DESTDIR)/usr/share/dbus-1/services
++
++autostart_DATA = sealertauto.desktop
+ INITDIR = $(DESTDIR)/etc/rc.d/init.d
+ SELINUXDIR = $(DESTDIR)/etc/selinux
+ 
++DBUSFLAGS = -DHAVE_DBUS -I/usr/include/dbus-1.0 -I/usr/lib64/dbus-1.0/include -I/usr/lib/dbus-1.0/include 
++DBUSLIB = -ldbus-glib-1 -ldbus-1
++
+ CFLAGS ?= -g -Werror -Wall -W
+-override CFLAGS += -I$(PREFIX)/include -D_FILE_OFFSET_BITS=64
+-LDLIBS += -lselinux -L$(PREFIX)/lib
++override CFLAGS += -I$(PREFIX)/include $(DBUSFLAGS) -I/usr/include/glib-2.0 -I/usr/lib64/glib-2.0/include -I/usr/lib/glib-2.0/include
++
++LDLIBS += -lselinux $(DBUSLIB) -lglib-2.0 -L$(LIBDIR)
+ 
+ all: restorecond
+ 
+-restorecond:  restorecond.o utmpwatcher.o stringslist.o
++restorecond.o utmpwatcher.o stringslist.o user.o watch.o: restorecond.h 
++
++restorecond:  ../setfiles/restore.o restorecond.o utmpwatcher.o stringslist.o user.o watch.o
+ 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+ 
+ install: all
+@@ -22,7 +33,12 @@
+ 	-mkdir -p $(INITDIR)
+ 	install -m 755 restorecond.init $(INITDIR)/restorecond
+ 	-mkdir -p $(SELINUXDIR)
+-	install -m 600 restorecond.conf $(SELINUXDIR)/restorecond.conf
++	install -m 644 restorecond.conf $(SELINUXDIR)/restorecond.conf
++	install -m 644 restorecond_user.conf $(SELINUXDIR)/restorecond_user.conf
++	-mkdir -p $(AUTOSTARTDIR)
++	install -m 644 restorecond.desktop $(AUTOSTARTDIR)/restorecond.desktop
++	-mkdir -p $(DBUSSERVICEDIR)
++	install -m 600 org.selinux.Restorecond.service  $(DBUSSERVICEDIR)/org.selinux.Restorecond.service
+ 
+ relabel: install
+ 	/sbin/restorecon $(SBINDIR)/restorecond 
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/restorecond/org.selinux.Restorecond.service policycoreutils-2.0.83/restorecond/org.selinux.Restorecond.service
+--- nsapolicycoreutils/restorecond/org.selinux.Restorecond.service	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/restorecond/org.selinux.Restorecond.service	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,3 @@
++[D-BUS Service]
++Name=org.selinux.Restorecond
++Exec=/usr/sbin/restorecond -u
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/restorecond/restorecond.8 policycoreutils-2.0.83/restorecond/restorecond.8
+--- nsapolicycoreutils/restorecond/restorecond.8	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/restorecond/restorecond.8	2010-07-30 13:50:40.000000000 -0400
+@@ -3,7 +3,7 @@
+ restorecond \- daemon that watches for file creation and then sets the default SELinux file context
+ 
+ .SH "SYNOPSIS"
+-.B restorecond  [\-d]
++.B restorecond  [\-d] [\-f restorecond_file ] [\-u] [\-v]
+ .P
+ 
+ .SH "DESCRIPTION"
+@@ -19,13 +19,22 @@
+ .B \-d
+ Turns on debugging mode.   Application will stay in the foreground and lots of
+ debugs messages start printing.
++.TP 
++.B \-f restorecond_file
++Use alternative restorecond.conf file.
++.TP 
++.B \-u
++Turns on user mode.  Runs restorecond in the user session and reads /etc/selinux/restorecond_user.conf.  Uses dbus to make sure only one restorecond is running per user session.
++.TP 
++.B \-v
++Turns on verbose debugging.  (Report missing files)
+ 
+ .SH "AUTHOR"
+-This man page was written by Dan Walsh <dwalsh@redhat.com>.
+-The program was written by Dan Walsh <dwalsh@redhat.com>.
++This man page and program was written by Dan Walsh <dwalsh@redhat.com>.
+ 
+ .SH "FILES"
+ /etc/selinux/restorecond.conf
++/etc/selinux/restorecond_user.conf
+ 
+ .SH "SEE ALSO"
+ .BR restorecon (8),
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/restorecond/restorecond.c policycoreutils-2.0.83/restorecond/restorecond.c
+--- nsapolicycoreutils/restorecond/restorecond.c	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/restorecond/restorecond.c	2010-07-30 13:50:40.000000000 -0400
+@@ -30,9 +30,11 @@
+  * and makes sure that there security context matches the systems defaults
+  *
+  * USAGE:
+- * restorecond [-d] [-v]
++ * restorecond [-d] [-u] [-v] [-f restorecond_file ]
+  * 
+  * -d   Run in debug mode
++ * -f   Use alternative restorecond_file 
++ * -u   Run in user mode
+  * -v   Run in verbose mode (Report missing files)
+  *
+  * EXAMPLE USAGE:
+@@ -48,294 +50,38 @@
+ #include <signal.h>
+ #include <string.h>
+ #include <unistd.h>
+-#include <ctype.h>
++#include "../setfiles/restore.h"
+ #include <sys/types.h>
+-#include <sys/stat.h>
+ #include <syslog.h>
+ #include <limits.h>
++#include <pwd.h>
++#include <sys/stat.h>
++#include <string.h>
++#include <stdio.h>
+ #include <fcntl.h>
+-
+ #include "restorecond.h"
+-#include "stringslist.h"
+ #include "utmpwatcher.h"
+ 
+-extern char *dirname(char *path);
++const char *homedir;
+ static int master_fd = -1;
+-static int master_wd = -1;
+-static int terminate = 0;
+-
+-#include <selinux/selinux.h>
+-#include <utmp.h>
+ 
+-/* size of the event structure, not counting name */
+-#define EVENT_SIZE  (sizeof (struct inotify_event))
+-/* reasonable guess as to size of 1024 events */
+-#define BUF_LEN        (1024 * (EVENT_SIZE + 16))
+-
+-static int debug_mode = 0;
+-static int verbose_mode = 0;
+-
+-static void restore(const char *filename, int exact);
+-
+-struct watchList {
+-	struct watchList *next;
+-	int wd;
+-	char *dir;
+-	struct stringsList *files;
+-};
+-struct watchList *firstDir = NULL;
+-
+-/* Compare two contexts to see if their differences are "significant",
+- * or whether the only difference is in the user. */
+-static int only_changed_user(const char *a, const char *b)
+-{
+-	char *rest_a, *rest_b;	/* Rest of the context after the user */
+-	if (!a || !b)
+-		return 0;
+-	rest_a = strchr(a, ':');
+-	rest_b = strchr(b, ':');
+-	if (!rest_a || !rest_b)
+-		return 0;
+-	return (strcmp(rest_a, rest_b) == 0);
+-}
+-
+-/* 
+-   A file was in a direcroty has been created. This function checks to 
+-   see if it is one that we are watching.
+-*/
+-
+-static int watch_list_find(int wd, const char *file)
+-{
+-	struct watchList *ptr = NULL;
+-	ptr = firstDir;
+-
+-	if (debug_mode)
+-		printf("%d: File=%s\n", wd, file);
+-	while (ptr != NULL) {
+-		if (ptr->wd == wd) {
+-			int exact=0;
+-			if (strings_list_find(ptr->files, file, &exact) == 0) {
+-				char *path = NULL;
+-				if (asprintf(&path, "%s/%s", ptr->dir, file) <
+-				    0)
+-					exitApp("Error allocating memory.");
+-				restore(path, exact);
+-				free(path);
+-				return 0;
+-			}
+-			if (debug_mode)
+-				strings_list_print(ptr->files);
+-
+-			/* Not found in this directory */
+-			return -1;
+-		}
+-		ptr = ptr->next;
+-	}
+-	/* Did not find a directory */
+-	return -1;
+-}
+-
+-static void watch_list_free(int fd)
+-{
+-	struct watchList *ptr = NULL;
+-	struct watchList *prev = NULL;
+-	ptr = firstDir;
+-
+-	while (ptr != NULL) {
+-		inotify_rm_watch(fd, ptr->wd);
+-		strings_list_free(ptr->files);
+-		free(ptr->dir);
+-		prev = ptr;
+-		ptr = ptr->next;
+-		free(prev);
+-	}
+-	firstDir = NULL;
+-}
++static char *server_watch_file  = "/etc/selinux/restorecond.conf";
++static char *user_watch_file  = "/etc/selinux/restorecond_user.conf";
++static char *watch_file;
++static struct restore_opts r_opts;
+ 
+-/* 
+-   Set the file context to the default file context for this system.
+-   Same as restorecon.
+-*/
+-static void restore(const char *filename, int exact)
+-{
+-	int retcontext = 0;
+-	security_context_t scontext = NULL;
+-	security_context_t prev_context = NULL;
+-	struct stat st;
+-	int fd = -1;
+-	if (debug_mode)
+-		printf("restore %s\n", filename);
+-
+-	fd = open(filename, O_NOFOLLOW | O_RDONLY);
+-	if (fd < 0) {
+-		if (verbose_mode)
+-			syslog(LOG_ERR, "Unable to open file (%s) %s\n",
+-			       filename, strerror(errno));
+-		return;
+-	}
+-
+-	if (fstat(fd, &st) != 0) {
+-		syslog(LOG_ERR, "Unable to stat file (%s) %s\n", filename,
+-		       strerror(errno));
+-		close(fd);
+-		return;
+-	}
+-
+-	if (!(st.st_mode & S_IFDIR) && st.st_nlink > 1) {
+-		if (exact) { 
+-			syslog(LOG_ERR,
+-			       "Will not restore a file with more than one hard link (%s) %s\n",
+-			       filename, strerror(errno));
+-		}
+-		close(fd);
+-		return;
+-	}
+-
+-	if (matchpathcon(filename, st.st_mode, &scontext) < 0) {
+-		if (errno == ENOENT)
+-			return;
+-		syslog(LOG_ERR, "matchpathcon(%s) failed %s\n", filename,
+-		       strerror(errno));
+-		return;
+-	}
+-	retcontext = fgetfilecon_raw(fd, &prev_context);
+-
+-	if (retcontext >= 0 || errno == ENODATA) {
+-		if (retcontext < 0)
+-			prev_context = NULL;
+-		if (retcontext < 0 || (strcmp(prev_context, scontext) != 0)) {
+-
+-			if (only_changed_user(scontext, prev_context) != 0) {
+-				free(scontext);
+-				free(prev_context);
+-				close(fd);
+-				return;
+-			}
+-
+-			if (fsetfilecon(fd, scontext) < 0) {
+-				if (errno != EOPNOTSUPP) 
+-					syslog(LOG_ERR,
+-					       "set context %s->%s failed:'%s'\n",
+-					       filename, scontext, strerror(errno));
+-				if (retcontext >= 0)
+-					free(prev_context);
+-				free(scontext);
+-				close(fd);
+-				return;
+-			}
+-			syslog(LOG_WARNING, "Reset file context %s: %s->%s\n",
+-			       filename, prev_context, scontext);
+-		}
+-		if (retcontext >= 0)
+-			free(prev_context);
+-	} else {
+-		if (errno != EOPNOTSUPP) 
+-			syslog(LOG_ERR, "get context on %s failed: '%s'\n",
+-			       filename, strerror(errno));
+-	}
+-	free(scontext);
+-	close(fd);
+-}
+-
+-static void process_config(int fd, FILE * cfg)
+-{
+-	char *line_buf = NULL;
+-	size_t len = 0;
+-
+-	while (getline(&line_buf, &len, cfg) > 0) {
+-		char *buffer = line_buf;
+-		while (isspace(*buffer))
+-			buffer++;
+-		if (buffer[0] == '#')
+-			continue;
+-		int l = strlen(buffer) - 1;
+-		if (l <= 0)
+-			continue;
+-		buffer[l] = 0;
+-		if (buffer[0] == '~')
+-			utmpwatcher_add(fd, &buffer[1]);
+-		else {
+-			watch_list_add(fd, buffer);
+-		}
+-	}
+-	free(line_buf);
+-}
+-
+-/* 
+-   Read config file ignoring Comment lines 
+-   Files specified one per line.  Files with "~" will be expanded to the logged in users
+-   homedirs.
+-*/
+-
+-static void read_config(int fd)
+-{
+-	char *watch_file_path = "/etc/selinux/restorecond.conf";
+-
+-	FILE *cfg = NULL;
+-	if (debug_mode)
+-		printf("Read Config\n");
+-
+-	watch_list_free(fd);
+-
+-	cfg = fopen(watch_file_path, "r");
+-	if (!cfg)
+-		exitApp("Error reading config file.");
+-	process_config(fd, cfg);
+-	fclose(cfg);
+-
+-	inotify_rm_watch(fd, master_wd);
+-	master_wd =
+-	    inotify_add_watch(fd, watch_file_path, IN_MOVED_FROM | IN_MODIFY);
+-	if (master_wd == -1)
+-		exitApp("Error watching config file.");
+-}
++#include <selinux/selinux.h>
+ 
+-/* 
+-   Inotify watch loop 
+-*/
+-static int watch(int fd)
+-{
+-	char buf[BUF_LEN];
+-	int len, i = 0;
+-	len = read(fd, buf, BUF_LEN);
+-	if (len < 0) {
+-		if (terminate == 0) {
+-			syslog(LOG_ERR, "Read error (%s)", strerror(errno));
+-			return 0;
+-		}
+-		syslog(LOG_ERR, "terminated");
+-		return -1;
+-	} else if (!len)
+-		/* BUF_LEN too small? */
+-		return -1;
+-	while (i < len) {
+-		struct inotify_event *event;
+-		event = (struct inotify_event *)&buf[i];
+-		if (debug_mode)
+-			printf("wd=%d mask=%u cookie=%u len=%u\n",
+-			       event->wd, event->mask,
+-			       event->cookie, event->len);
+-		if (event->wd == master_wd)
+-			read_config(fd);
+-		else {
+-			switch (utmpwatcher_handle(fd, event->wd)) {
+-			case -1:	/* Message was not for utmpwatcher */
+-				if (event->len)
+-					watch_list_find(event->wd, event->name);
+-				break;
+-
+-			case 1:	/* utmp has changed need to reload */
+-				read_config(fd);
+-				break;
+-
+-			default:	/* No users logged in or out */
+-				break;
+-			}
+-		}
++int debug_mode = 0;
++int terminate = 0;
++int master_wd = -1;
++int run_as_user = 0;
+ 
+-		i += EVENT_SIZE + event->len;
+-	}
+-	return 0;
++static void done(void) {
++	watch_list_free(master_fd);
++	close(master_fd);
++	utmpwatcher_free();
++	matchpathcon_fini();
+ }
+ 
+ static const char *pidfile = "/var/run/restorecond.pid";
+@@ -374,7 +120,7 @@
+ 
+ static void usage(char *program)
+ {
+-	printf("%s [-d] [-v] \n", program);
++	printf("%s [-d] [-f restorecond_file ] [-u] [-v] \n", program);
+ 	exit(0);
+ }
+ 
+@@ -390,74 +136,35 @@
+    to see if it is one that we are watching.
+ */
+ 
+-void watch_list_add(int fd, const char *path)
+-{
+-	struct watchList *ptr = NULL;
+-	struct watchList *prev = NULL;
+-	char *x = strdup(path);
+-	if (!x)
+-		exitApp("Out of Memory");
+-	char *dir = dirname(x);
+-	char *file = basename(path);
+-	ptr = firstDir;
+-
+-	restore(path, 1);
+-
+-	while (ptr != NULL) {
+-		if (strcmp(dir, ptr->dir) == 0) {
+-			strings_list_add(&ptr->files, file);
+-			free(x);
+-			return;
+-		}
+-		prev = ptr;
+-		ptr = ptr->next;
+-	}
+-	ptr = calloc(1, sizeof(struct watchList));
+-
+-	if (!ptr)
+-		exitApp("Out of Memory");
+-
+-	ptr->wd = inotify_add_watch(fd, dir, IN_CREATE | IN_MOVED_TO);
+-	if (ptr->wd == -1) {
+-		free(ptr);
+-		syslog(LOG_ERR, "Unable to watch (%s) %s\n",
+-		       path, strerror(errno));
+-		return;
+-	}
+-
+-	ptr->dir = strdup(dir);
+-	if (!ptr->dir)
+-		exitApp("Out of Memory");
+-
+-	strings_list_add(&ptr->files, file);
+-	if (prev)
+-		prev->next = ptr;
+-	else
+-		firstDir = ptr;
+-
+-	if (debug_mode)
+-		printf("%d: Dir=%s, File=%s\n", ptr->wd, ptr->dir, file);
+-
+-	free(x);
+-}
+-
+ int main(int argc, char **argv)
+ {
+ 	int opt;
+ 	struct sigaction sa;
+ 
+-#ifndef DEBUG
+-	/* Make sure we are root */
+-	if (getuid() != 0) {
+-		fprintf(stderr, "You must be root to run this program.\n");
+-		return 1;
+-	}
+-#endif
+-	/* Make sure we are root */
+-	if (is_selinux_enabled() != 1) {
+-		fprintf(stderr, "Daemon requires SELinux be enabled to run.\n");
+-		return 1;
+-	}
++	memset(&r_opts, 0, sizeof(r_opts));
++
++	r_opts.progress = 0;
++	r_opts.count = 0;
++	r_opts.debug = 0;
++	r_opts.change = 1;
++	r_opts.verbose = 0;
++	r_opts.logging = 0;
++	r_opts.rootpath = NULL;
++	r_opts.rootpathlen = 0;
++	r_opts.outfile = NULL;
++	r_opts.force = 0;
++	r_opts.hard_links = 0;
++	r_opts.abort_on_error = 0;
++	r_opts.add_assoc = 0;
++	r_opts.expand_realpath = 0;
++	r_opts.fts_flags = FTS_PHYSICAL;
++	r_opts.selabel_opt_validate = NULL;
++	r_opts.selabel_opt_path = NULL;
++	r_opts.ignore_enoent = 1;
++
++	restore_init(&r_opts);
++	/* If we are not running SELinux then just exit */
++	if (is_selinux_enabled() != 1) return 0;
+ 
+ 	/* Register sighandlers */
+ 	sa.sa_flags = 0;
+@@ -467,36 +174,56 @@
+ 
+ 	set_matchpathcon_flags(MATCHPATHCON_NOTRANS);
+ 
+-	master_fd = inotify_init();
+-	if (master_fd < 0)
+-		exitApp("inotify_init");
+-
+-	while ((opt = getopt(argc, argv, "dv")) > 0) {
++	exclude_non_seclabel_mounts();
++	atexit( done );
++	while ((opt = getopt(argc, argv, "df:uv")) > 0) {
+ 		switch (opt) {
+ 		case 'd':
+ 			debug_mode = 1;
+ 			break;
++		case 'f':
++			watch_file = optarg;
++			break;
++		case 'u':
++			run_as_user = 1;
++			break;
+ 		case 'v':
+-			verbose_mode = 1;
++			r_opts.verbose++;
+ 			break;
+ 		case '?':
+ 			usage(argv[0]);
+ 		}
+ 	}
+-	read_config(master_fd);
++
++	master_fd = inotify_init();
++	if (master_fd < 0)
++		exitApp("inotify_init");
++
++	uid_t uid = getuid();
++	struct passwd *pwd = getpwuid(uid);
++	homedir = pwd->pw_dir;
++	if (uid != 0) {
++		if (run_as_user)
++			return server(master_fd, user_watch_file);
++		if (start() != 0) 
++			return server(master_fd, user_watch_file);
++		return 0;
++	}
++
++	watch_file = server_watch_file;
++	read_config(master_fd, watch_file);
+ 
+ 	if (!debug_mode)
+ 		daemon(0, 0);
+ 
+ 	write_pid_file();
+ 
+-	while (watch(master_fd) == 0) {
++	while (watch(master_fd, watch_file) == 0) {
+ 	};
+ 
+ 	watch_list_free(master_fd);
+ 	close(master_fd);
+ 	matchpathcon_fini();
+-	utmpwatcher_free();
+ 	if (pidfile)
+ 		unlink(pidfile);
+ 
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/restorecond/restorecond.conf policycoreutils-2.0.83/restorecond/restorecond.conf
+--- nsapolicycoreutils/restorecond/restorecond.conf	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/restorecond/restorecond.conf	2010-07-30 13:50:40.000000000 -0400
+@@ -4,8 +4,5 @@
+ /etc/mtab
+ /var/run/utmp
+ /var/log/wtmp
+-~/*
+-/root/.ssh
++/root/*
+ /root/.ssh/*
+-
+-
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/restorecond/restorecond.desktop policycoreutils-2.0.83/restorecond/restorecond.desktop
+--- nsapolicycoreutils/restorecond/restorecond.desktop	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/restorecond/restorecond.desktop	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,7 @@
++[Desktop Entry]
++Name=File Context maintainer
++Exec=/usr/sbin/restorecond -u
++Comment=Fix file context in owned by the user
++Encoding=UTF-8
++Type=Application
++StartupNotify=false
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/restorecond/restorecond.h policycoreutils-2.0.83/restorecond/restorecond.h
+--- nsapolicycoreutils/restorecond/restorecond.h	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/restorecond/restorecond.h	2010-07-30 13:50:40.000000000 -0400
+@@ -24,7 +24,22 @@
+ #ifndef RESTORED_CONFIG_H
+ #define RESTORED_CONFIG_H
+ 
+-void exitApp(const char *msg);
+-void watch_list_add(int inotify_fd, const char *path);
++extern int debug_mode;
++extern const char *homedir;
++extern int terminate;
++extern int master_wd;
++extern int run_as_user;
++
++extern int start(void);
++extern int server(int, const char *watch_file);
++
++extern void exitApp(const char *msg);
++extern void read_config(int fd,	const char *watch_file);
++
++extern int watch(int fd, const char *watch_file);
++extern void watch_list_add(int inotify_fd, const char *path);
++extern int watch_list_find(int wd, const char *file);
++extern void watch_list_free(int fd);
++extern int watch_list_isempty();
+ 
+ #endif
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/restorecond/restorecond.init policycoreutils-2.0.83/restorecond/restorecond.init
+--- nsapolicycoreutils/restorecond/restorecond.init	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/restorecond/restorecond.init	2010-07-30 13:50:40.000000000 -0400
+@@ -26,7 +26,7 @@
+ # Source function library.
+ . /etc/rc.d/init.d/functions
+ 
+-[ -x /usr/sbin/selinuxenabled ] && /usr/sbin/selinuxenabled || exit 0
++[ -x /usr/sbin/selinuxenabled ] && /usr/sbin/selinuxenabled || exit 7
+ 
+ # Check that we are root ... so non-root users stop here
+ test $EUID = 0  || exit 4
+@@ -75,16 +75,15 @@
+ 	status restorecond
+ 	RETVAL=$?
+ 	;;
+-  restart|reload)
++  force-reload|restart|reload)
+ 	restart
+ 	;;
+   condrestart)
+ 	[ -e /var/lock/subsys/restorecond ] && restart || :
+ 	;;
+   *)
+-        echo $"Usage: $0 {start|stop|restart|reload|condrestart}"
++        echo $"Usage: $0 {start|stop|restart|force-reload|status|condrestart}"
+         RETVAL=3
+ esac
+ 
+ exit $RETVAL
+-
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/restorecond/restorecond_user.conf policycoreutils-2.0.83/restorecond/restorecond_user.conf
+--- nsapolicycoreutils/restorecond/restorecond_user.conf	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/restorecond/restorecond_user.conf	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,2 @@
++~/*
++~/public_html/*
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/restorecond/user.c policycoreutils-2.0.83/restorecond/user.c
+--- nsapolicycoreutils/restorecond/user.c	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/restorecond/user.c	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,239 @@
++/*
++ * restorecond
++ *
++ * Copyright (C) 2006-2009 Red Hat 
++ * see file 'COPYING' for use and warranty information
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation; either version 2 of
++ * the License, or (at your option) any later version.
++ * 
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++.* 
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA     
++ * 02111-1307  USA
++ *
++ * Authors:  
++ *   Dan Walsh <dwalsh@redhat.com>
++ *
++*/
++
++#define _GNU_SOURCE
++#include <sys/inotify.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <signal.h>
++#include <string.h>
++#include <unistd.h>
++#include <ctype.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <syslog.h>
++#include <limits.h>
++#include <fcntl.h>
++
++#include "restorecond.h"
++#include "stringslist.h"
++#include <glib.h>
++#ifdef HAVE_DBUS
++#include <dbus/dbus.h>
++#include <dbus/dbus-glib.h>
++#include <dbus/dbus-glib-lowlevel.h>
++
++static DBusHandlerResult signal_filter (DBusConnection *connection, DBusMessage *message, void *user_data);
++
++static const char *PATH="/org/selinux/Restorecond";
++//static const char *BUSNAME="org.selinux.Restorecond";
++static const char *INTERFACE="org.selinux.RestorecondIface";
++static const char *RULE="type='signal',interface='org.selinux.RestorecondIface'";
++
++
++static DBusHandlerResult
++signal_filter (DBusConnection *connection  __attribute__ ((__unused__)), DBusMessage *message, void *user_data)
++{
++  /* User data is the event loop we are running in */
++  GMainLoop *loop = user_data;
++
++  /* A signal from the bus saying we are about to be disconnected */
++  if (dbus_message_is_signal 
++        (message, INTERFACE, "Stop")) {
++	  
++      /* Tell the main loop to quit */
++      g_main_loop_quit (loop);
++      /* We have handled this message, don't pass it on */
++      return DBUS_HANDLER_RESULT_HANDLED;
++  }
++  /* A Ping signal on the com.burtonini.dbus.Signal interface */
++  else if (dbus_message_is_signal (message, INTERFACE, "Start")) {
++    DBusError error;
++    dbus_error_init (&error);
++    g_print("Start received\n");
++    return DBUS_HANDLER_RESULT_HANDLED;
++  }
++  return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
++}
++
++static int dbus_server(GMainLoop *loop) {
++    DBusConnection *bus;
++    DBusError error;
++    dbus_error_init (&error);
++    bus = dbus_bus_get (DBUS_BUS_SESSION, &error);
++    if (bus) {
++	dbus_connection_setup_with_g_main (bus, NULL);
++	
++	/* listening to messages from all objects as no path is specified */
++	dbus_bus_add_match (bus, RULE, &error); // see signals from the given interfacey
++	dbus_connection_add_filter (bus, signal_filter, loop, NULL);
++	return 0;
++    } 
++    return -1;
++}
++
++#endif
++#include <selinux/selinux.h>
++#include <sys/file.h>
++
++/* size of the event structure, not counting name */
++#define EVENT_SIZE  (sizeof (struct inotify_event))
++/* reasonable guess as to size of 1024 events */
++#define BUF_LEN        (1024 * (EVENT_SIZE + 16))
++
++static gboolean
++io_channel_callback
++ (GIOChannel *source,
++  GIOCondition condition,
++  gpointer data __attribute__((__unused__)))
++{
++
++  char buffer[BUF_LEN+1];
++  gsize bytes_read;
++  unsigned int i = 0;
++
++  if (condition & G_IO_IN) {
++    /* Data is available. */
++    g_io_channel_read
++      (source, buffer,
++       sizeof (buffer),
++       &bytes_read);
++
++    while (i < bytes_read) {
++	    struct inotify_event *event;
++	    event = (struct inotify_event *)&buffer[i];
++	    if (debug_mode)
++		    printf("wd=%d mask=%u cookie=%u len=%u\n",
++			   event->wd, event->mask,
++			   event->cookie, event->len);
++	    if (event->len)
++		    watch_list_find(event->wd, event->name);
++	    
++	    i += EVENT_SIZE + event->len;
++    }
++  }
++
++  /* An error happened while reading
++     the file. */
++
++  if (condition & G_IO_NVAL)
++    return FALSE;
++
++  /* We have reached the end of the
++     file. */
++
++  if (condition & G_IO_HUP) {
++    g_io_channel_close (source);
++    return FALSE;
++  }
++
++  /* Returning TRUE will make sure
++     the callback remains associated
++     to the channel. */
++
++  return TRUE;
++}
++
++int start() {
++#ifdef HAVE_DBUS
++	DBusConnection *bus;
++	DBusError error;
++	DBusMessage *message;
++	
++	/* Get a connection to the session bus */
++	dbus_error_init (&error);
++	bus = dbus_bus_get (DBUS_BUS_SESSION, &error);
++	if (!bus) {
++		if (debug_mode)
++			g_warning ("Failed to connect to the D-BUS daemon: %s", error.message);
++		dbus_error_free (&error);
++		return 1;
++	}
++	
++
++	/* Create a new signal "Start" on the interface,
++	 * from the object  */
++	message = dbus_message_new_signal (PATH,
++					   INTERFACE, "Start");
++	/* Send the signal */
++	dbus_connection_send (bus, message, NULL);
++	/* Free the signal now we have finished with it */
++	dbus_message_unref (message);
++#endif /* HAVE_DBUS */
++	return 0;
++}
++
++static int local_server() {
++	// ! dbus, run as local service
++	char *ptr=NULL;
++	asprintf(&ptr, "%s/.restorecond", homedir);
++	int fd = open(ptr, O_CREAT | O_WRONLY | O_NOFOLLOW, S_IRUSR | S_IWUSR);
++	if (debug_mode)
++		g_warning ("Lock file: %s", ptr);
++	
++	free(ptr);
++	if (fd < 0) {
++		if (debug_mode)
++			perror("open");
++		return -1;
++	}
++	if (flock(fd, LOCK_EX | LOCK_NB) < 0) {
++		if (debug_mode)
++			perror("flock");
++		return -1;
++	}
++	return 0;
++}
++
++int server(int master_fd, const char *watch_file) {
++    GMainLoop *loop;
++
++    loop = g_main_loop_new (NULL, FALSE);
++    
++#ifdef HAVE_DBUS
++    if (dbus_server(loop) != 0) 
++#endif /* HAVE_DBUS */
++	    if (local_server(loop) != 0) 
++		    return 0;
++
++    read_config(master_fd, watch_file);
++    
++    if (watch_list_isempty()) return 0;
++
++    set_matchpathcon_flags(MATCHPATHCON_NOTRANS);
++    
++    GIOChannel *c = g_io_channel_unix_new(master_fd);
++    
++    g_io_add_watch_full( c,
++			 G_PRIORITY_HIGH,
++			 G_IO_IN|G_IO_ERR|G_IO_HUP,
++			 io_channel_callback, NULL, NULL);
++    
++    g_main_loop_run (loop);
++    return 0;
++}
++
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/restorecond/utmpwatcher.c policycoreutils-2.0.83/restorecond/utmpwatcher.c
+--- nsapolicycoreutils/restorecond/utmpwatcher.c	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/restorecond/utmpwatcher.c	2010-08-13 10:00:27.000000000 -0400
+@@ -72,8 +72,8 @@
+ 	if (utmp_wd == -1)
+ 		exitApp("Error watching utmp file.");
+ 
++	changed = strings_list_diff(prev_utmp_ptr, utmp_ptr);
+ 	if (prev_utmp_ptr) {
+-		changed = strings_list_diff(prev_utmp_ptr, utmp_ptr);
+ 		strings_list_free(prev_utmp_ptr);
+ 	}
+ 	return changed;
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/restorecond/watch.c policycoreutils-2.0.83/restorecond/watch.c
+--- nsapolicycoreutils/restorecond/watch.c	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/restorecond/watch.c	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,260 @@
++#define _GNU_SOURCE
++#include <sys/inotify.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <ctype.h>
++#include <sys/types.h>
++#include <syslog.h>
++#include "../setfiles/restore.h"
++#include <glob.h>
++#include <libgen.h>
++#include <sys/stat.h>
++#include <string.h>
++#include <stdio.h>
++#include <fcntl.h>
++#include <selinux/selinux.h>
++#include "restorecond.h"
++#include "stringslist.h"
++#include "utmpwatcher.h"
++
++/* size of the event structure, not counting name */
++#define EVENT_SIZE  (sizeof (struct inotify_event))
++/* reasonable guess as to size of 1024 events */
++#define BUF_LEN        (1024 * (EVENT_SIZE + 16))
++
++
++struct watchList {
++	struct watchList *next;
++	int wd;
++	char *dir;
++	struct stringsList *files;
++};
++struct watchList *firstDir = NULL;
++
++int watch_list_isempty() {
++	return firstDir == NULL;
++}
++
++void watch_list_add(int fd, const char *path)
++{
++	struct watchList *ptr = NULL;
++	size_t i = 0;
++	struct watchList *prev = NULL;
++	glob_t globbuf;
++	char *x = strdup(path);
++	if (!x) exitApp("Out of Memory");
++	char *file = basename(x);
++	char *dir = dirname(x);
++	ptr = firstDir;
++
++	if (exclude(path)) return;
++
++	globbuf.gl_offs = 1;
++	if (glob(path, 
++		 GLOB_TILDE | GLOB_PERIOD,
++		 NULL,
++		 &globbuf) >= 0) {
++		for (i=0; i < globbuf.gl_pathc; i++) {
++		  int len = strlen(globbuf.gl_pathv[i]) -2;
++		  if (len > 0 && strcmp(&globbuf.gl_pathv[i][len--], "/.") == 0) continue;
++		  if (len > 0 && strcmp(&globbuf.gl_pathv[i][len], "/..") == 0) continue;
++		  if (process_one_realpath(globbuf.gl_pathv[i], 0) > 0)
++			  process_one_realpath(globbuf.gl_pathv[i], 1);
++		}
++		globfree(&globbuf);
++	}
++
++	while (ptr != NULL) {
++		if (strcmp(dir, ptr->dir) == 0) {
++			strings_list_add(&ptr->files, file);
++			free(x);
++			return;
++		}
++		prev = ptr;
++		ptr = ptr->next;
++	}
++	ptr = calloc(1, sizeof(struct watchList));
++
++	if (!ptr) exitApp("Out of Memory");
++
++	ptr->wd = inotify_add_watch(fd, dir, IN_CREATE | IN_MOVED_TO);
++	if (ptr->wd == -1) {
++		free(ptr);
++		free(x);
++		if (! run_as_user) 
++			syslog(LOG_ERR, "Unable to watch (%s) %s\n",
++			       path, strerror(errno));
++		return;
++	}
++
++	ptr->dir = strdup(dir);
++	if (!ptr->dir)
++		exitApp("Out of Memory");
++
++	strings_list_add(&ptr->files, file);
++	if (prev)
++		prev->next = ptr;
++	else
++		firstDir = ptr;
++
++	if (debug_mode)
++		printf("%d: Dir=%s, File=%s\n", ptr->wd, ptr->dir, file);
++
++	free(x);
++}
++
++/* 
++   A file was in a direcroty has been created. This function checks to 
++   see if it is one that we are watching.
++*/
++
++int watch_list_find(int wd, const char *file)
++{
++	struct watchList *ptr = NULL;
++	ptr = firstDir;
++	if (debug_mode)
++		printf("%d: File=%s\n", wd, file);
++	while (ptr != NULL) {
++		if (ptr->wd == wd) {
++			int exact=0;
++			if (strings_list_find(ptr->files, file, &exact) == 0) {
++				char *path = NULL;
++				if (asprintf(&path, "%s/%s", ptr->dir, file) <
++				    0)
++					exitApp("Error allocating memory.");
++				
++				process_one_realpath(path, 0);
++				free(path);
++				return 0;
++			}
++			if (debug_mode)
++				strings_list_print(ptr->files);
++
++			/* Not found in this directory */
++			return -1;
++		}
++		ptr = ptr->next;
++	}
++	/* Did not find a directory */
++	return -1;
++}
++
++void watch_list_free(int fd)
++{
++	struct watchList *ptr = NULL;
++	struct watchList *prev = NULL;
++	ptr = firstDir;
++
++	while (ptr != NULL) {
++		inotify_rm_watch(fd, ptr->wd);
++		strings_list_free(ptr->files);
++		free(ptr->dir);
++		prev = ptr;
++		ptr = ptr->next;
++		free(prev);
++	}
++	firstDir = NULL;
++}
++
++/* 
++   Inotify watch loop 
++*/
++int watch(int fd, const char *watch_file)
++{
++	char buf[BUF_LEN];
++	int len, i = 0;
++	if (firstDir == NULL) return 0;
++
++	len = read(fd, buf, BUF_LEN);
++	if (len < 0) {
++		if (terminate == 0) {
++			syslog(LOG_ERR, "Read error (%s)", strerror(errno));
++			return 0;
++		}
++		syslog(LOG_ERR, "terminated");
++		return -1;
++	} else if (!len)
++		/* BUF_LEN too small? */
++		return -1;
++	while (i < len) {
++		struct inotify_event *event;
++		event = (struct inotify_event *)&buf[i];
++		if (debug_mode)
++			printf("wd=%d mask=%u cookie=%u len=%u\n",
++			       event->wd, event->mask,
++			       event->cookie, event->len);
++		if (event->wd == master_wd)
++			read_config(fd, watch_file);
++		else {
++			if (event->len)
++				watch_list_find(event->wd, event->name);
++		}
++
++		i += EVENT_SIZE + event->len;
++	}
++	return 0;
++}
++
++static void process_config(int fd, FILE * cfg)
++{
++	char *line_buf = NULL;
++	size_t len = 0;
++
++	while (getline(&line_buf, &len, cfg) > 0) {
++		char *buffer = line_buf;
++		while (isspace(*buffer))
++			buffer++;
++		if (buffer[0] == '#')
++			continue;
++		int l = strlen(buffer) - 1;
++		if (l <= 0)
++			continue;
++		buffer[l] = 0;
++		if (buffer[0] == '~') {
++			if (run_as_user) {
++				char *ptr=NULL;
++				asprintf(&ptr, "%s%s", homedir, &buffer[1]);
++				watch_list_add(fd, ptr);
++				free(ptr);
++			} else {
++				utmpwatcher_add(fd, &buffer[1]);
++			}
++		} else {
++			watch_list_add(fd, buffer);
++		}
++	}
++	free(line_buf);
++}
++
++/* 
++   Read config file ignoring Comment lines 
++   Files specified one per line.  Files with "~" will be expanded to the logged in users
++   homedirs.
++*/
++
++void read_config(int fd, const char *watch_file_path)
++{
++
++	FILE *cfg = NULL;
++	if (debug_mode)
++		printf("Read Config\n");
++
++	watch_list_free(fd);
++
++	cfg = fopen(watch_file_path, "r");
++	if (!cfg){
++		perror(watch_file_path);
++		exitApp("Error reading config file");
++	}
++	process_config(fd, cfg);
++	fclose(cfg);
++
++	inotify_rm_watch(fd, master_wd);
++	master_wd =
++	    inotify_add_watch(fd, watch_file_path, IN_MOVED_FROM | IN_MODIFY);
++	if (master_wd == -1)
++		exitApp("Error watching config file.");
++}
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/sandbox/deliverables/basicwrapper policycoreutils-2.0.83/sandbox/deliverables/basicwrapper
+--- nsapolicycoreutils/sandbox/deliverables/basicwrapper	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/sandbox/deliverables/basicwrapper	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,4 @@
++import os, sys
++SANDBOX_ARGS = ['-f%s' % os.environ['_CONDOR_SCRATCH_DIR']]
++SANDBOX_ARGS.extend(sys.argv[1::])
++os.execv('/usr/bin/sandbox',SANDBOX_ARGS)
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/sandbox/deliverables/README policycoreutils-2.0.83/sandbox/deliverables/README
+--- nsapolicycoreutils/sandbox/deliverables/README	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/sandbox/deliverables/README	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,32 @@
++Files:
++run-in-sandbox.py:
++   adds the run in sandbox extension to nautilus
++   copy to .nautilus/python-extensions
++   yum install nautilus-python
++
++sandbox:
++   adds support for file checking, This was working I don't know why it didn't at that presentation
++   adds support for file relabeling, This is/was also working.
++
++basicwrapper:
++   This is pretty much the most basic condor wrapper you can create, it requires the -f option in sandbox. Also I can't make this work, maybe the grid team will have more luck.
++
++Other:
++Xguest Live cd:
++   There's a tutorial on live cds here: http://www.ibm.com/developerworks/library/l-fedora-livecd/index.html?ca=dgr-lnxw16FedoraLiveCD
++   It looks like David Zeuthen is head guy in the live cd department, he might be worth talking to.
++
++System-config-selinux:
++   wiki: fedorahosted.org/system-config-selinux
++   realeases: fedorahosted.org/releases/s/y/system-config-selinux/ includes a spec,srpm, and tarball of current version
++   The project is technically owned by Roman Rakus (rrakus@redhat.com) I've sent him an email asking him to make you a git contributor.
++   I'll continue making updates to this and make sure it gets into the repos.
++
++Assuming I don't get to keep my RedHat email you can contact me:
++email: chris.pardy@gmail.com
++phone: 1-207-838-7119
++
++I'll probably continue to be on the #fedora-selinux and #selinux irc channels
++
++Thanks for a great summer.
++Chris Pardy
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/sandbox/deliverables/run-in-sandbox.py policycoreutils-2.0.83/sandbox/deliverables/run-in-sandbox.py
+--- nsapolicycoreutils/sandbox/deliverables/run-in-sandbox.py	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/sandbox/deliverables/run-in-sandbox.py	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,49 @@
++import os
++import os.path
++import urllib
++
++import nautilus
++import gtk
++import gconf
++
++class RunInSandboxExtension(nautilus.MenuProvider):
++    def __init__(self):
++        self.client = gconf.client_get_default()
++
++    def sandbox_init(self,file,path):
++        if os.path.basename(path).endswith('.desktop'):
++            import re
++            f = open(path,'r')
++            for i in f.readlines():
++                m = re.match(r'Exec=(?P<name>\S+)',i)
++                if m:
++                    path = m.group('name')
++                    f.close()
++                    break
++        os.system('/usr/bin/sandbox -X %s &' % path)
++
++    def get_file_items(self, window, files):
++        if len(files) != 1:
++            return
++        
++        file = files[0]
++        
++        if file.is_directory():
++            return
++        
++        if file.get_uri_scheme() != 'file':
++            return
++
++        path = file.get_uri().replace('file://','',1)
++        if not os.access(path,os.X_OK):
++            return
++        
++        path = os.path.realpath(path)
++
++        item = nautilus.MenuItem('NautilusPython::openterminal_file_items','Run In Sandbox','Run %s in Sandbox' % file.get_name())
++        item.connect('activate',self.sandbox_init,path)
++        return item,
++
++    def get_background_items(self, window, file):
++        return
++
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/sandbox/Makefile policycoreutils-2.0.83/sandbox/Makefile
+--- nsapolicycoreutils/sandbox/Makefile	2010-06-16 08:03:38.000000000 -0400
++++ policycoreutils-2.0.83/sandbox/Makefile	2010-07-30 13:50:40.000000000 -0400
+@@ -7,8 +7,8 @@
+ MANDIR ?= $(PREFIX)/share/man
+ LOCALEDIR ?= /usr/share/locale
+ SHAREDIR ?= $(PREFIX)/share/sandbox
+-override CFLAGS += $(LDFLAGS) -I$(PREFIX)/include -DPACKAGE="\"policycoreutils\""
+-LDLIBS += -lselinux -lcap-ng 
++override CFLAGS += $(LDFLAGS) -I$(PREFIX)/include -DPACKAGE="\"policycoreutils\"" -Wall -Werror -Wextra
++LDLIBS += -lcgroup -lselinux -lcap-ng 
+ 
+ all: sandbox seunshare sandboxX.sh 
+ 
+@@ -20,6 +20,9 @@
+ 	install -m 755 sandbox $(BINDIR)
+ 	-mkdir -p $(MANDIR)/man8
+ 	install -m 644 sandbox.8 $(MANDIR)/man8/
++	install -m 644 seunshare.8 $(MANDIR)/man8/
++	-mkdir -p $(MANDIR)/man5
++	install -m 644 sandbox.conf.5 $(MANDIR)/man5/
+ 	-mkdir -p $(SBINDIR)
+ 	install -m 4755 seunshare $(SBINDIR)/
+ 	-mkdir -p $(SHAREDIR)
+@@ -27,7 +30,7 @@
+ 	-mkdir -p $(INITDIR)
+ 	install -m 755 sandbox.init $(INITDIR)/sandbox
+ 	-mkdir -p $(SYSCONFDIR)
+-	install -m 644 sandbox.config $(SYSCONFDIR)/sandbox
++	install -m 644 sandbox.conf $(SYSCONFDIR)/sandbox
+ 
+ test:
+ 	@python test_sandbox.py -v
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/sandbox/sandbox policycoreutils-2.0.83/sandbox/sandbox
+--- nsapolicycoreutils/sandbox/sandbox	2010-06-16 08:03:38.000000000 -0400
++++ policycoreutils-2.0.83/sandbox/sandbox	2010-08-13 15:05:03.000000000 -0400
+@@ -1,5 +1,6 @@
+-#! /usr/bin/python -E
++#! /usr/bin/python -Es
+ # Authors: Dan Walsh <dwalsh@redhat.com>
++# Authors: Thomas Liu <tliu@fedoraproject.org>
+ # Authors: Josh Cogliati
+ #
+ # Copyright (C) 2009,2010  Red Hat
+@@ -19,15 +20,17 @@
+ # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ #
+ 
+-import os, sys, socket, random, fcntl, shutil, re, subprocess
++import os, stat, sys, socket, random, fcntl, shutil, re, subprocess
+ import selinux
+ import signal
+ from tempfile import mkdtemp
+ import pwd
++import commands 
+ 
+ PROGNAME = "policycoreutils"
+ HOMEDIR=pwd.getpwuid(os.getuid()).pw_dir
+-
++SEUNSHARE = "/usr/sbin/seunshare"
++SANDBOXSH = "/usr/share/sandbox/sandboxX.sh"
+ import gettext
+ gettext.bindtextdomain(PROGNAME, "/usr/share/locale")
+ gettext.textdomain(PROGNAME)
+@@ -63,15 +66,15 @@
+     sys.stderr.flush()
+     sys.exit(1)
+ 
+-def copyfile(file, dir, dest):
++def copyfile(file, srcdir, dest):
+        import re
+-       if file.startswith(dir):
++       if file.startswith(srcdir):
+               dname = os.path.dirname(file)
+               bname = os.path.basename(file)
+-              if dname == dir:
++              if dname == srcdir:
+                      dest = dest + "/" + bname
+               else:
+-                     newdir = re.sub(dir, dest, dname)
++                     newdir = re.sub(srcdir, dest, dname)
+                      if not os.path.exists(newdir):
+                             os.makedirs(newdir)
+                      dest = newdir + "/" + bname
+@@ -83,7 +86,7 @@
+                             shutil.copy2(file, dest)
+               except shutil.Error, elist:
+                      for e in elist:
+-                            sys.stderr.write(e[1])
++                            sys.stderr.write(str(e[1]))
+                      
+               SAVE_FILES[file] = (dest, os.path.getmtime(dest))
+ 
+@@ -161,10 +164,10 @@
+                   if not self.__options.homedir or not self.__options.tmpdir:
+                          self.usage(_("Homedir and tempdir required for level mounts"))
+ 
+-           if not os.path.exists("/usr/sbin/seunshare"):
++           if not os.path.exists(SEUNSHARE):
+                   raise ValueError(_("""
+-/usr/sbin/seunshare is required for the action you want to perform.  
+-"""))
++%s is required for the action you want to perform.  
++""") % SEUNSHARE)
+ 
+     def __mount_callback(self, option, opt, value, parser):
+            self.__mount = True
+@@ -172,6 +175,15 @@
+     def __x_callback(self, option, opt, value, parser):
+            self.__mount = True
+            setattr(parser.values, option.dest, True)
++           if not os.path.exists(SEUNSHARE):
++                  raise ValueError(_("""
++%s is required for the action you want to perform.  
++""") % SEUNSHARE)
++
++           if not os.path.exists(SANDBOXSH):
++                  raise ValueError(_("""
++%s is required for the action you want to perform.  
++""") % SANDBOXSH)
+ 
+     def __validdir(self, option, opt, value, parser):
+            if not os.path.isdir(value):
+@@ -218,7 +230,7 @@
+ /usr/bin/test -r ~/.xmodmap && /usr/bin/xmodmap ~/.xmodmap
+ %s &
+ WM_PID=$!
+-%s
++dbus-launch %s
+ kill -TERM $WM_PID  2> /dev/null
+ """ % (command, wm, command))
+            fd.close()
+@@ -230,9 +242,9 @@
+     def __parse_options(self):
+         from optparse import OptionParser
+         usage = _("""
+-sandbox [-h] [-[X|M] [-l level ] [-H homedir] [-T tempdir]] [-I includefile ] [-W windowmanager ] [[-i file ] ...] [ -t type ] command
++sandbox [-h] [-l level ] [-[X|M] [-H homedir] [-T tempdir]] [-I includefile ] [-W windowmanager ] [[-i file ] ...] [ -t type ] command
+ 
+-sandbox [-h] [-[X|M] [-l level ] [-H homedir] [-T tempdir]] [-I includefile ] [-W windowmanager ] [[-i file ] ...] [ -t type ] -S
++sandbox [-h] [-l level ] [-[X|M] [-H homedir] [-T tempdir]] [-I includefile ] [-W windowmanager ] [[-i file ] ...] [ -t type ] -S
+ """)
+         
+         parser = OptionParser(version=self.VERSION, usage=usage)
+@@ -276,6 +288,10 @@
+         parser.add_option("-l", "--level", dest="level", 
+                           help=_("MCS/MLS level for the sandbox"))
+ 
++        parser.add_option("-C", "--cgroups",
++                         action="store_true", dest="usecgroup", default=False,
++                         help="Use cgroups to limit this sandbox.")
++
+         self.__parser=parser
+ 
+         self.__options, cmds = parser.parse_args()
+@@ -351,22 +367,24 @@
+ 
+     def __execute(self):
+            try:
+-                  if self.__options.X_ind:
+-                         xmodmapfile = self.__homedir + "/.xmodmap"
+-                         xd = open(xmodmapfile,"w")
+-                         subprocess.Popen(["/usr/bin/xmodmap","-pke"],stdout=xd).wait()
+-                         xd.close()
+-
+-                         self.__setup_sandboxrc(self.__options.wm)
+-                         
+-                         cmds = [ '/usr/sbin/seunshare', "-t", self.__tmpdir, "-h", self.__homedir, "--", self.__execcon, "/usr/share/sandbox/sandboxX.sh" ]
+-                         rc = subprocess.Popen(cmds).wait()
+-                         return rc
+-
++                  cmds = [ SEUNSHARE,  "-Z", self.__execcon ]
++                  if self.__options.usecgroup == True:
++                         cmds.append('-c')
+                   if self.__mount:
+-                         cmds =  [ '/usr/sbin/seunshare', "-t", self.__tmpdir, "-h", self.__homedir, "--", self.__execcon ] + self.__paths
+-                         rc = subprocess.Popen(cmds).wait()
+-                         return rc
++                         cmds +=  [ "-t", self.__tmpdir, "-h", self.__homedir ]
++
++                         if self.__options.X_ind:
++                                xmodmapfile = self.__homedir + "/.xmodmap"
++                                xd = open(xmodmapfile,"w")
++                                subprocess.Popen(["/usr/bin/xmodmap","-pke"],stdout=xd).wait()
++                                xd.close()
++
++                                self.__setup_sandboxrc(self.__options.wm)
++
++                                cmds += [ "--", SANDBOXSH ]
++                         else:
++                                cmds += [ "--" ] + self.__paths
++                         return subprocess.Popen(cmds).wait()
+ 
+                   selinux.setexeccon(self.__execcon)
+                   rc = subprocess.Popen(self.__cmds).wait()
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/sandbox/sandbox.8 policycoreutils-2.0.83/sandbox/sandbox.8
+--- nsapolicycoreutils/sandbox/sandbox.8	2010-06-16 08:03:38.000000000 -0400
++++ policycoreutils-2.0.83/sandbox/sandbox.8	2010-07-30 13:50:40.000000000 -0400
+@@ -1,9 +1,12 @@
+-.TH SANDBOX "8" "May 2009" "chcat" "User Commands"
++.TH SANDBOX "8" "May 2010" "sandbox" "User Commands"
+ .SH NAME
+ sandbox \- Run cmd under an SELinux sandbox
+ .SH SYNOPSIS
+ .B sandbox
+ [-l level ] [[-M | -X]  -H homedir -T tempdir ] [-I includefile ] [ -W windowmanager ] [[-i file ]...] [ -t type ] cmd
++
++.br
++.B sandbox
+ [-l level ] [[-M | -X]  -H homedir -T tempdir ] [-I includefile ] [ -W windowmanager ] [[-i file ]...] [ -t type ] -S
+ .br
+ .SH DESCRIPTION
+@@ -42,6 +45,9 @@
+ \fB\-T\ tmpdir
+ Use alternate tempory directory to mount on /tmp.  Defaults to tmpfs. Requires -X or -M.
+ .TP
++\fB\-S
++Run a full desktop session, Requires level, and home and tmpdir.
++.TP
+ \fB\-W windowmanager\fR
+ Select alternative window manager to run within 
+ .B sandbox -X.
+@@ -50,8 +56,17 @@
+ \fB\-X\fR 
+ Create an X based Sandbox for gui apps, temporary files for
+ $HOME and /tmp, secondary Xserver, defaults to sandbox_x_t
++.TP
++\fB\-C\fR
++Use control groups to control this copy of sandbox.  Specify parameters in /etc/sysconfig/sandbox.  Max memory usage and cpu usage are to be specified in percent.  You can specify which CPUs to use by numbering them 0,1,2... etc.
+ .PP
+ .SH "SEE ALSO"
+ .TP
+-runcon(1)
++runcon(1), seunshare(8), selinux(8)
+ .PP
++
++.SH AUTHOR
++This manual page was written by 
++.I Dan Walsh <dwalsh@redhat.com>
++and
++.I Thomas Liu <tliu@fedoraproject.org>
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/sandbox/sandbox.conf policycoreutils-2.0.83/sandbox/sandbox.conf
+--- nsapolicycoreutils/sandbox/sandbox.conf	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/sandbox/sandbox.conf	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,7 @@
++# Space separate list of homedirs
++HOMEDIRS="/home"
++# Control group configuration
++NAME=sandbox
++CPUAFFINITY=ALL
++MEMUSAGE=80%
++CPUUSAGE=80%
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/sandbox/sandbox.conf.5 policycoreutils-2.0.83/sandbox/sandbox.conf.5
+--- nsapolicycoreutils/sandbox/sandbox.conf.5	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/sandbox/sandbox.conf.5	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,40 @@
++.TH sandbox.conf "5" "June 2010" "sandbox.conf" "Linux System Administration"
++.SH NAME
++sandbox.conf \- user config file for the SELinux sandbox 
++.SH DESCRIPTION
++.PP
++When running sandbox with the -C argument, it will be confined using control groups and a system administrator can specify how the sandbox is confined.
++
++.PP
++Everything after "#" is ignored, as are empty lines.  All arguments should be separated by and equals sign ("=").
++
++.PP
++These keywords are allowed.
++
++.RS
++.TP
++.B NAME
++The name of the sandbox control group.  Default is "sandbox".
++
++.TP
++.B CPUAFFINITY
++Which cpus to assign sandbox to.  The default is ALL, but users can specify a comma-separated list with dashes ("-") to represent ranges.  Ex: 0-2,5
++
++.TP
++.B MEMUSAGE
++How much memory to allow sandbox to use.  The default is 80%.  Users can specify either a percentage or a value in the form of a number followed by one of the suffixes K, M, G to denote kilobytes, megabytes or gigabytes respectively.  Ex: 50% or 100M
++
++.TP
++.B CPUUSAGE
++Percentage of cpu sandbox should be allowed to use.  The default is 80%.  Specify a value followed by a percent sign ("%"). Ex: 50%
++
++
++
++.SH "SEE ALSO"
++.TP
++sandbox(8)
++.PP
++
++.SH AUTHOR
++This manual page was written by 
++.I Thomas Liu <tliu@fedoraproject.org>
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/sandbox/sandbox.config policycoreutils-2.0.83/sandbox/sandbox.config
+--- nsapolicycoreutils/sandbox/sandbox.config	2010-06-16 08:03:38.000000000 -0400
++++ policycoreutils-2.0.83/sandbox/sandbox.config	1969-12-31 19:00:00.000000000 -0500
+@@ -1,2 +0,0 @@
+-# Space separate list of homedirs
+-HOMEDIRS="/home"
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/sandbox/sandbox.init policycoreutils-2.0.83/sandbox/sandbox.init
+--- nsapolicycoreutils/sandbox/sandbox.init	2010-06-16 08:03:38.000000000 -0400
++++ policycoreutils-2.0.83/sandbox/sandbox.init	2010-07-30 13:50:40.000000000 -0400
+@@ -10,17 +10,12 @@
+ #
+ # chkconfig: 345 1 99
+ #
+-# Description: sandbox and other apps that want to use pam_namespace 
+-#              on /var/tmp, /tmp and home directories, requires this script
+-#              to be run at boot time.
+-#              This script sets up the / mount point and all of its 
+-#              subdirectories as shared. The script sets up
+-#              /tmp, /var/tmp, /home and any homedirs listed in 
+-#              /etc/sysconfig/sandbox and all of their subdirectories 
+-#              as unshared.
+-#              All processes that use pam_namespace will see 
+-#              modifications to the global mountspace, except for the
+-#              unshared directories.
++# description: sandbox, xguest and other apps that want to use pam_namespace \
++#              require this script be run at boot.  This service script does \
++#              not actually run any service but sets up: \
++#              /var/tmp, /tmp and home directories to be used by these tools.\
++#              If you do not use sandbox, xguest or pam_namespace you can turn \
++#              this service off.\
+ #
+ 
+ # Source function library.
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/sandbox/seunshare.8 policycoreutils-2.0.83/sandbox/seunshare.8
+--- nsapolicycoreutils/sandbox/seunshare.8	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/sandbox/seunshare.8	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,37 @@
++.TH SEUNSHARE "8" "May 2010" "seunshare" "User Commands"
++.SH NAME
++seunshare \- Run cmd with alternate homedir, tmpdir and/or SELinux context
++.SH SYNOPSIS
++.B seunshare
++[ -v ] [ -t tmpdir ] [ -h homedir ] [ -Z context ] -- executable [args]
++.br
++.SH DESCRIPTION
++.PP
++Run the 
++.I executable
++within the specified context, using the alternate home directory and /tmp directory.  The seunshare command unshares from the default namespace, then mounts the specified homedir and tmpdir over the default homedir and /tmp. Finally it tells the kernel to execute the application under the specified SELinux context.
++
++.TP
++\fB\-h homedir\fR
++Alternate homedir to be used by the application.  Homedir must be owned by the user.
++.TP
++\fB\-t\ tmpdir
++Use alternate tempory directory to mount on /tmp.  tmpdir must be owned by the user.
++.TP
++\fB\-c cgroups\fR
++Use cgroups to control this copy of seunshare.  Specify parameters in /etc/sysconfig/sandbox.  Max memory usage and cpu usage are to be specified in percent.  You can specify which CPUs to use by numbering them 0,1,2... etc.
++.TP
++\fB\-Z\ context
++Use alternate SELinux context while runing the executable.
++.TP
++\fB\-v\fR
++Verbose output
++.SH "SEE ALSO"
++.TP
++runcon(1), sandbox(8), selinux(8)	
++.PP
++.SH AUTHOR
++This manual page was written by 
++.I Dan Walsh <dwalsh@redhat.com>
++and
++.I Thomas Liu <tliu@fedoraproject.org>
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/sandbox/seunshare.c policycoreutils-2.0.83/sandbox/seunshare.c
+--- nsapolicycoreutils/sandbox/seunshare.c	2010-06-16 08:03:38.000000000 -0400
++++ policycoreutils-2.0.83/sandbox/seunshare.c	2010-07-30 13:50:40.000000000 -0400
+@@ -1,13 +1,20 @@
++/*
++ * Authors: Dan Walsh <dwalsh@redhat.com>
++ * Authors: Thomas Liu <tliu@fedoraproject.org>
++ */
++
++#define _GNU_SOURCE
+ #include <signal.h>
+ #include <sys/types.h>
+ #include <sys/wait.h>
+ #include <syslog.h>
+ #include <sys/mount.h>
+ #include <pwd.h>
+-#define _GNU_SOURCE
+ #include <sched.h>
++#include <libcgroup.h>
+ #include <string.h>
+ #include <stdio.h>
++#include <regex.h>
+ #include <unistd.h>
+ #include <stdlib.h>
+ #include <cap-ng.h>
+@@ -21,7 +28,6 @@
+ 
+ #include <sys/types.h>
+ #include <sys/stat.h>
+-#include <unistd.h>
+ 
+ #ifdef USE_NLS
+ #include <locale.h>		/* for setlocale() */
+@@ -39,6 +45,12 @@
+ #define MS_PRIVATE 1<<18
+ #endif
+ 
++#ifndef PACKAGE
++#define PACKAGE "policycoreutils"	/* the name of this package lang translation */
++#endif
++
++#define BUF_SIZE 1024
++
+ /**
+  * This function will drop all capabilities 
+  * Returns zero on success, non-zero otherwise
+@@ -151,25 +163,57 @@
+ 
+ 	if (verify_mount(dst, pwd) < 0) 
+ 		return -1;
++
++	return 0;
++}
++
++#define USAGE_STRING _("USAGE: seunshare [ -v ] [ -t tmpdir ] [ -h homedir ] [-Z CONTEXT] --  executable [args] ")
++
++int sandbox_error(const char *string) {
++	fprintf(stderr, string);
++	syslog(LOG_AUTHPRIV | LOG_ALERT, string);
++	exit(-1);
++
+ }
+ 
+-#define USAGE_STRING _("USAGE: seunshare [ -v ] [ -t tmpdir ] [ -h homedir ] -- CONTEXT executable [args] ")
++
++int match(const char *string, char *pattern) {
++	int status;
++	regex_t re; 
++	if (regcomp(&re, pattern, REG_EXTENDED|REG_NOSUB) != 0) {
++		return 0;
++	}
++	status = regexec(&re, string, (size_t)0, NULL, 0);
++	regfree(&re);	
++	if (status != 0) {
++		return 0;
++	}
++	return 1;
++}
++
++void config_error() {
++	fprintf(stderr, "Error parsing config file.");
++	exit(-1);
++}
+ 
+ int main(int argc, char **argv) {
+ 	int rc;
+ 	int status = -1;
+ 
+-	security_context_t scontext;
++	security_context_t scontext = NULL;
+ 
+ 	int flag_index;		/* flag index in argv[] */
+ 	int clflag;		/* holds codes for command line flags */
+ 	char *tmpdir_s = NULL;	/* tmpdir spec'd by user in argv[] */
+ 	char *homedir_s = NULL;	/* homedir spec'd by user in argv[] */
++	int usecgroups = 0;
+ 
+ 	const struct option long_options[] = {
+ 		{"homedir", 1, 0, 'h'},
+ 		{"tmpdir", 1, 0, 't'},
+ 		{"verbose", 1, 0, 'v'},
++		{"cgroups", 1, 0, 'c'},
++		{"context", 1, 0, 'Z'},
+ 		{NULL, 0, 0, 0}
+ 	};
+ 
+@@ -180,6 +224,12 @@
+ 		return -1;
+ 	}
+ 
++#ifdef USE_NLS
++	setlocale(LC_ALL, "");
++	bindtextdomain(PACKAGE, LOCALEDIR);
++	textdomain(PACKAGE);
++#endif
++
+ 	struct passwd *pwd=getpwuid(uid);
+ 	if (!pwd) {
+ 		perror(_("getpwduid failed"));
+@@ -192,30 +242,30 @@
+ 	}
+ 
+ 	while (1) {
+-		clflag = getopt_long(argc, argv, "h:t:", long_options,
++		clflag = getopt_long(argc, argv, "cvh:t:c:m:p:Z:", long_options,
+ 				     &flag_index);
+ 		if (clflag == -1)
+ 			break;
+ 
+ 		switch (clflag) {
+ 		case 't':
+-			if (!(tmpdir_s = realpath(optarg, NULL))) {
+-				fprintf(stderr, _("Invalid mount point %s: %s\n"), optarg, strerror(errno));
+-				return -1;
+-			}
++			tmpdir_s = optarg;
+ 			if (verify_mount(tmpdir_s, pwd) < 0) return -1;
+ 			break;
+ 		case 'h':
+-			if (!(homedir_s = realpath(optarg, NULL))) {
+-				fprintf(stderr, _("Invalid mount point %s: %s\n"), optarg, strerror(errno));
+-				return -1;
+-			}
++			homedir_s = optarg;
+ 			if (verify_mount(homedir_s, pwd) < 0) return -1;
+ 			if (verify_mount(pwd->pw_dir, pwd) < 0) return -1;
+ 			break;
+ 		case 'v':
+ 			verbose = 1;
+ 			break;
++		case 'c':
++			usecgroups = 1;
++			break;
++		case 'Z':
++			scontext = strdup(optarg);
++			break;
+ 		default:
+ 			fprintf(stderr, "%s\n", USAGE_STRING);
+ 			return -1;
+@@ -223,21 +273,179 @@
+ 	}
+ 
+ 	if (! homedir_s && ! tmpdir_s) {
+-		fprintf(stderr, _("Error: tmpdir and/or homedir required \n"),
+-			"%s\n", USAGE_STRING);
++		fprintf(stderr, _("Error: tmpdir and/or homedir required \n %s\n"),USAGE_STRING);
+ 		return -1;
+ 	}
+ 
+-	if (argc - optind < 2) {
+-		fprintf(stderr, _("Error: context and executable required \n"),
+-			"%s\n", USAGE_STRING);
++	if (argc - optind < 1) {
++		fprintf(stderr, _("Error: executable required \n %s \n"), USAGE_STRING);
+ 		return -1;
+ 	}
+ 
+-	scontext = argv[optind++];
+ 	
+ 	if (set_signal_handles())
+ 		return -1;
++	if (usecgroups) {
++		char *cpus = NULL;	/* which CPUs to use */
++		char *cgroupname = NULL;/* name for the cgroup */
++		char *mem = NULL;	/* string for memory amount to pass to cgroup */
++		int64_t memusage = 0;	/* amount of memory to use max (percent) */
++		int cpupercentage = 0;  /* what percentage of cpu to allow usage */
++		FILE* fp;
++		char buf[BUF_SIZE];
++		char *tok = NULL;
++		const char* fname = "/etc/sysconfig/sandbox";	
++
++		if ((fp = fopen(fname, "rt")) == NULL) {
++			fprintf(stderr, "Error opening sandbox config file.");
++			exit(-1);
++		}
++		while(fgets(buf, BUF_SIZE, fp) != NULL) {
++			/* Skip comments */
++			if (buf[0] == '#') continue;
++			
++			/* Copy the string, ignoring whitespace */
++			int len = strlen(buf);
++			char *str = malloc((len + 1) * sizeof(char));
++
++			int ind = 0;	
++			int i;
++			for (i = 0; i < len; i++) {
++				char cur = buf[i];
++				if (cur != ' ' && cur != '\t') {
++					str[ind] = cur;
++					ind++;
++				}
++			}
++			str[ind] = '\0';
++
++			tok = strtok(str, "=\n");
++			if (tok != NULL) {
++				if (!strcmp(tok, "CPUAFFINITY")) {
++					tok = strtok(NULL, "=\n");
++					cpus = strdup(tok);
++					if (!strcmp(cpus, "ALL")) {
++						cpus = NULL;
++					}
++				} else if (!strcmp(tok, "MEMUSAGE")) {
++					tok = strtok(NULL, "=\n");
++					if (match(tok, "^[0-9]+[kKmMgG%]")) {
++						char *ind = strchr(tok, '%');
++						if (ind != NULL) {
++							*ind = '\0';;
++							memusage = atoi(tok);
++						} else {
++							mem = strdup(tok);
++						}
++					} else {
++						config_error();
++					}
++
++				} else if (!strcmp(tok, "CPUUSAGE")) {
++					tok = strtok(NULL, "=\n");
++					if (match(tok, "^[0-9]+\%")) {
++						char* ind = strchr(tok, '%');
++						*ind = '\0';
++						cpupercentage = atoi(tok);
++					} else {
++						config_error();
++					}
++				} else if (!strcmp(tok, "NAME")) {
++					tok = strtok(NULL, "=\n");
++					cgroupname = strdup(tok);
++				} else {
++					continue;
++				}
++			}
++
++
++		}
++		if (mem == NULL) {
++			long phypz = sysconf(_SC_PHYS_PAGES);
++			long psize = sysconf(_SC_PAGE_SIZE);
++			memusage = phypz * psize * (float) memusage / 100.0;
++		}
++
++		cgroup_init();
++
++		int64_t current_runtime = 0;
++		int64_t current_period = 0 ;
++		int64_t current_mem = 0;
++		char *curr_cpu_path = NULL;
++		char *curr_mem_path = NULL;
++		int ret  = cgroup_get_current_controller_path(getpid(), "cpu", &curr_cpu_path);
++		if (ret) {
++			sandbox_error("Error while trying to get current controller path.\n");
++		} else {
++			struct cgroup *curr = cgroup_new_cgroup(curr_cpu_path);
++			cgroup_get_cgroup(curr);
++			cgroup_get_value_int64(cgroup_get_controller(curr, "cpu"), "cpu.rt_runtime_us", &current_runtime);
++			cgroup_get_value_int64(cgroup_get_controller(curr, "cpu"), "cpu.rt_period_us", &current_period);
++		}   
++
++		ret  = cgroup_get_current_controller_path(getpid(), "memory", &curr_mem_path);
++		if (ret) {
++			sandbox_error("Error while trying to get current controller path.\n");
++		} else {
++			struct cgroup *curr = cgroup_new_cgroup(curr_mem_path);
++			cgroup_get_cgroup(curr);
++			cgroup_get_value_int64(cgroup_get_controller(curr, "memory"), "memory.limit_in_bytes", &current_mem);
++		}   
++
++		if (((float) cpupercentage)  / 100.0> (float)current_runtime / (float) current_period) {
++			sandbox_error("CPU usage restricted!\n");
++			exit(-1);
++		}   
++
++		if (mem == NULL) {	
++			if (memusage > current_mem) {
++				sandbox_error("Attempting to use more memory than allowed!");
++				exit(-1);
++			}
++		}
++	    
++		long nprocs = sysconf(_SC_NPROCESSORS_ONLN);
++
++		struct sched_param sp; 
++		sp.sched_priority = sched_get_priority_min(SCHED_FIFO);
++		sched_setscheduler(getpid(), SCHED_FIFO, &sp);
++		struct cgroup *sandbox_group = cgroup_new_cgroup(cgroupname);
++		cgroup_add_controller(sandbox_group, "memory");
++		cgroup_add_controller(sandbox_group, "cpu");
++
++		if (mem == NULL) {
++			if (memusage > 0) {
++				cgroup_set_value_uint64(cgroup_get_controller(sandbox_group, "memory"), "memory.limit_in_bytes", memusage);
++			}	
++		} else {
++			cgroup_set_value_string(cgroup_get_controller(sandbox_group, "memory"), "memory.limit_in_bytes", mem);
++		}
++		if (cpupercentage > 0) {
++			cgroup_set_value_uint64(cgroup_get_controller(sandbox_group, "cpu"), "cpu.rt_runtime_us",
++						(float) cpupercentage / 100.0 * 60000);
++			cgroup_set_value_uint64(cgroup_get_controller(sandbox_group, "cpu"), "cpu.rt_period_us",60000 * nprocs);
++		}
++		if (cpus != NULL) {
++			cgroup_set_value_string(cgroup_get_controller(sandbox_group, "cpu"), "cgroup.procs",cpus);
++		}
++
++		uint64_t allocated_mem;
++		if (cgroup_get_value_uint64(cgroup_get_controller(sandbox_group, "memory"), "memory.limit_in_bytes", &allocated_mem) > current_mem) {
++			sandbox_error("Attempting to use more memory than allowed!\n");
++			exit(-1);
++		}
++
++
++		int r = cgroup_create_cgroup(sandbox_group, 1);
++		if (r != 0) {
++			sandbox_error("Failed to create group.  Ensure that cgconfig service is running. \n");
++			exit(-1);
++		}
++
++
++		cgroup_attach_task(sandbox_group);
++
++	}
+ 
+         if (unshare(CLONE_NEWNS) < 0) {
+ 		perror(_("Failed to unshare"));
+@@ -286,11 +494,13 @@
+ 			exit(-1);
+ 		}
+ 		
+-		if (setexeccon(scontext)) {
+-			fprintf(stderr, _("Could not set exec context to %s.\n"),
+-				scontext);
+-			free(display);
+-			exit(-1);
++		if (scontext) {
++			if (setexeccon(scontext)) {
++				fprintf(stderr, _("Could not set exec context to %s.\n"),
++					scontext);
++				free(display);
++				exit(-1);
++			}
+ 		}
+ 
+ 		if (display) 
+@@ -308,14 +518,12 @@
+ 		setsid();
+ 		execv(argv[optind], argv + optind);
+ 		free(display);
++		freecon(scontext);
+ 		perror("execv");
+ 		exit(-1);
+ 	} else {
+ 		waitpid(child, &status, 0);
+ 	}
+ 
+-	free(tmpdir_s);
+-	free(homedir_s);
+-
+ 	return status;
+ }
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/scripts/chcat policycoreutils-2.0.83/scripts/chcat
+--- nsapolicycoreutils/scripts/chcat	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/scripts/chcat	2010-07-30 13:50:40.000000000 -0400
+@@ -1,4 +1,4 @@
+-#! /usr/bin/python -E
++#! /usr/bin/python -Es
+ # Copyright (C) 2005 Red Hat 
+ # see file 'COPYING' for use and warranty information
+ #
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/scripts/fixfiles policycoreutils-2.0.83/scripts/fixfiles
+--- nsapolicycoreutils/scripts/fixfiles	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/scripts/fixfiles	2010-07-30 13:50:40.000000000 -0400
+@@ -21,6 +21,17 @@
+ # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ 
+ #
++# Get all mounted rw file systems that support seclabel
++#
++get_labeled_mounts() {
++# /dev is not listed in the mountab
++FS="`mount | egrep -v '\((|.*,)bind(,.*|)\)' | awk '/\(rw/{print $3}';` /dev"
++for i in $FS; do 
++    grep --silent "$i ".*seclabel /proc/self/mounts && echo $i
++done
++}
++
++#
+ # Set global Variables
+ #
+ fullFlag=0
+@@ -35,9 +46,7 @@
+ LOGGER=/usr/sbin/logger
+ SETFILES=/sbin/setfiles
+ RESTORECON=/sbin/restorecon
+-FILESYSTEMSRW=`mount | grep -v "context=" | egrep -v '\((|.*,)bind(,.*|)\)' | awk '/(ext[234]| ext4dev | gfs2 | xfs | jfs | btrfs ).*\(rw/{print $3}';`
+-FILESYSTEMSRO=`mount | grep -v "context=" | egrep -v '\((|.*,)bind(,.*|)\)' | awk '/(ext[234]| ext4dev | gfs2 | xfs | jfs | btrfs ).*\(ro/{print $3}';`
+-FILESYSTEMS="$FILESYSTEMSRW $FILESYSTEMSRO"
++FILESYSTEMS=`get_labeled_mounts`
+ SELINUXTYPE="targeted"
+ if [ -e /etc/selinux/config ]; then
+     . /etc/selinux/config
+@@ -87,23 +96,10 @@
+                   esac; \
+                fi; \
+             done | \
+-	while read pattern ; do sh -c "find $pattern \
+-		      ! \( -fstype ext2 -o -fstype ext3 -o -fstype ext4 -o -fstype ext4dev  -o -fstype gfs2 -o -fstype jfs -o -fstype xfs -o -fstype btrfs \) -prune  -o \
+-		      \( -wholename /home -o -wholename /root -o -wholename /tmp -wholename /dev \) -prune -o -print0"; \
+-		      done 2> /dev/null | \
+-	 ${RESTORECON} $* -0 -f - 
++		      ${RESTORECON} -f - -R -p  -e /home -e /tmp -r /dev; \
+ 	rm -f ${TEMPFILE} ${PREFCTEMPFILE}
+ fi
+ }
+-#
+-# Log all Read Only file systems 
+-#
+-LogReadOnly() {
+-if [ ! -z "$FILESYSTEMSRO" ]; then
+-    logit "Warning: Skipping the following R/O filesystems:"
+-    logit "$FILESYSTEMSRO"
+-fi
+-}
+ 
+ rpmlist() {
+ rpm -q --qf '[%{FILESTATES} %{FILENAMES}\n]' "$1" | grep '^0 ' | cut -f2- -d ' '
+@@ -121,23 +117,16 @@
+ fi
+ if [ ! -z "$RPMFILES" ]; then
+     for i in `echo "$RPMFILES" | sed 's/,/ /g'`; do
+-	rpmlist $i | ${RESTORECON} ${FORCEFLAG} $* -R -i -f - 2>&1 >> $LOGFILE
++	rpmlist $i | ${RESTORECON} ${FORCEFLAG} $* -R -i -f - 2>&1 | cat >> $LOGFILE
+     done
+     exit $?
+ fi
+ if [ ! -z "$FILEPATH" ]; then
+-    if [ -x /usr/bin/find ]; then
+-	/usr/bin/find "$FILEPATH" \
+-	    ! \( -fstype ext2 -o -fstype ext3 -o -fstype ext4 -o -fstype ext4dev -o -fstype gfs2 -o -fstype jfs -o -fstype xfs -o -fstype btrfs \) -prune  -o -print0 | \
+-	    ${RESTORECON} ${FORCEFLAG} $* -0 -f - 2>&1 >> $LOGFILE
+-    else
+-	${RESTORECON} ${FORCEFLAG} -R $* $FILEPATH 2>&1 >> $LOGFILE
+-    fi
++    ${RESTORECON} ${FORCEFLAG} -R $* $FILEPATH 2>&1 | cat >> $LOGFILE
+     return
+ fi
+ [ -x /usr/sbin/genhomedircon ] && /usr/sbin/genhomedircon
+-LogReadOnly
+-${SETFILES} -q ${SYSLOGFLAG} ${FORCEFLAG} $* ${FC} ${FILESYSTEMSRW} 2>&1 >> $LOGFILE
++${SETFILES} -q ${SYSLOGFLAG} ${FORCEFLAG} $* ${FC} ${FILESYSTEMS} 2>&1 | cat >> $LOGFILE
+ rm -rf /tmp/gconfd-* /tmp/pulse-* /tmp/orbit-*
+ find /tmp \( -context "*:file_t*" -o -context "*:unlabeled_t*" \) -exec chcon -t tmp_t {} \;
+ find /var/tmp \( -context "*:file_t*" -o -context "*:unlabeled_t*" \) -exec chcon -t tmp_t {} \;
+@@ -146,8 +135,7 @@
+ 
+ fullrelabel() {
+     logit "Cleaning out /tmp"
+-    find /tmp/ -mindepth 1 -print0 | xargs -0 /bin/rm -f
+-    LogReadOnly
++    find /tmp/ -mindepth 1 -delete
+     restore
+ }
+ 
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/scripts/genhomedircon.8 policycoreutils-2.0.83/scripts/genhomedircon.8
+--- nsapolicycoreutils/scripts/genhomedircon.8	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/scripts/genhomedircon.8	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,37 @@
++.\" Hey, Emacs! This is an -*- nroff -*- source file.
++.\" Copyright (c) 2010 Dan Walsh <dwalsh@redhat.com>
++.\"
++.\" This is free documentation; you can redistribute it and/or
++.\" modify it under the terms of the GNU General Public License as
++.\" published by the Free Software Foundation; either version 2 of
++.\" the License, or (at your option) any later version.
++.\"
++.\" The GNU General Public License's references to "object code"
++.\" and "executables" are to be interpreted as the output of any
++.\" document formatting or typesetting system, including
++.\" intermediate and printed output.
++.\"
++.\" This manual is distributed in the hope that it will be useful,
++.\" but WITHOUT ANY WARRANTY; without even the implied warranty of
++.\" MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++.\" GNU General Public License for more details.
++.\"
++.\" You should have received a copy of the GNU General Public
++.\" License along with this manual; if not, write to the Free
++.\" Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139,
++.\" USA.
++.\"
++.\"
++.TH GENHOMEDIRCON "8" "May 2010" "Security Enhanced Linux" "SELinux"
++.SH NAME
++genhomedircon \- generate SELinux file context configuration entries for user home directories 
++.SH SYNOPSIS
++.B genhomedircon
++is a script that executes semodule to rebuild policy and create the 
++labels for HOMEDIRS based on home directories returned by the getpw calls.
++
++This functionality is enabled via the usepasswd flag in /etc/selinux/semanage.conf.
++
++.SH AUTHOR
++This manual page was written by 
++.I Dan Walsh <dwalsh@redhat.com>
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/scripts/Makefile policycoreutils-2.0.83/scripts/Makefile
+--- nsapolicycoreutils/scripts/Makefile	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/scripts/Makefile	2010-07-30 13:50:40.000000000 -0400
+@@ -14,6 +14,7 @@
+ 	install -m 755 genhomedircon  $(SBINDIR)
+ 	-mkdir -p $(MANDIR)/man8
+ 	install -m 644 fixfiles.8 $(MANDIR)/man8/
++	install -m 644 genhomedircon.8 $(MANDIR)/man8/
+ 	install -m 644 chcat.8 $(MANDIR)/man8/
+ 
+ clean:
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/semanage/default_encoding/default_encoding.c policycoreutils-2.0.83/semanage/default_encoding/default_encoding.c
+--- nsapolicycoreutils/semanage/default_encoding/default_encoding.c	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/semanage/default_encoding/default_encoding.c	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,59 @@
++/*
++ * Authors:
++ *   John Dennis <jdennis@redhat.com>
++ *
++ * Copyright (C) 2009  Red Hat
++ * see file 'COPYING' for use and warranty information
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License as
++ * published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++ */
++
++#include <Python.h>
++
++PyDoc_STRVAR(setdefaultencoding_doc,
++"setdefaultencoding(encoding='utf-8')\n\
++\n\
++Set the current default string encoding used by the Unicode implementation.\n\
++Defaults to utf-8."
++);
++
++static PyObject *
++setdefaultencoding(PyObject *self, PyObject *args, PyObject *kwds)
++{
++    static char *kwlist[] = {"utf-8", NULL};
++    char *encoding;
++
++    if (!PyArg_ParseTupleAndKeywords(args, kwds, "s:setdefaultencoding", kwlist, &encoding))
++        return NULL;
++
++    if (PyUnicode_SetDefaultEncoding(encoding))
++        return NULL;
++
++    Py_RETURN_NONE;
++}
++
++static PyMethodDef methods[] = {
++    {"setdefaultencoding", (PyCFunction)setdefaultencoding, METH_VARARGS|METH_KEYWORDS, setdefaultencoding_doc},
++	{NULL,		NULL}		/* sentinel */
++};
++
++
++PyMODINIT_FUNC
++initdefault_encoding_utf8(void) 
++{
++    PyObject* m;
++
++    PyUnicode_SetDefaultEncoding("utf-8");
++    m = Py_InitModule3("default_encoding_utf8", methods, "Forces the default encoding to utf-8");
++}
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/semanage/default_encoding/Makefile policycoreutils-2.0.83/semanage/default_encoding/Makefile
+--- nsapolicycoreutils/semanage/default_encoding/Makefile	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/semanage/default_encoding/Makefile	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,8 @@
++all: 
++	LDFLAGS="" python setup.py build
++
++install: all
++	LDFLAGS="" python setup.py install --root=$(DESTDIR)/
++
++clean:
++	rm -rf build *~
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/semanage/default_encoding/policycoreutils/__init__.py policycoreutils-2.0.83/semanage/default_encoding/policycoreutils/__init__.py
+--- nsapolicycoreutils/semanage/default_encoding/policycoreutils/__init__.py	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/semanage/default_encoding/policycoreutils/__init__.py	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,17 @@
++#
++# Copyright (C) 2006,2007,2008, 2009 Red Hat, Inc.
++#
++# This program is free software; you can redistribute it and/or modify
++# it under the terms of the GNU General Public License as published by
++# the Free Software Foundation; either version 2 of the License, or
++# (at your option) any later version.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
++#
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/semanage/default_encoding/setup.py policycoreutils-2.0.83/semanage/default_encoding/setup.py
+--- nsapolicycoreutils/semanage/default_encoding/setup.py	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/semanage/default_encoding/setup.py	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,38 @@
++# Authors:
++#   John Dennis <jdennis@redhat.com>
++#
++# Copyright (C) 2009  Red Hat
++# see file 'COPYING' for use and warranty information
++#
++# This program is free software; you can redistribute it and/or
++# modify it under the terms of the GNU General Public License as
++# published by the Free Software Foundation.
++#
++# This program is distributed in the hope that it will be useful,
++# but WITHOUT ANY WARRANTY; without even the implied warranty of
++# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++# GNU General Public License for more details.
++#
++# You should have received a copy of the GNU General Public License
++# along with this program; if not, write to the Free Software
++# Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
++
++from distutils.core import setup, Extension
++
++default_encoding_utf8 = Extension('policycoreutils.default_encoding_utf8', ['default_encoding.c'])
++
++setup(name             = 'policycoreutils-default-encoding',
++      version          = '0.1',
++      description      = 'Forces the default encoding in Python to be utf-8',
++      long_description = 'Forces the default encoding in Python to be utf-8',
++      author           = 'John Dennis',
++      author_email     = 'jdennis@redhat.com',
++      maintainer       = 'John Dennis',
++      maintainer_email = 'jdennis@redhat.com',
++      license          = 'GPLv3+',
++      platforms        = 'posix',
++      url              = '',
++      download_url     = '',
++      ext_modules      = [default_encoding_utf8],
++      packages=["policycoreutils"],
++)
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/semanage/semanage policycoreutils-2.0.83/semanage/semanage
+--- nsapolicycoreutils/semanage/semanage	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/semanage/semanage	2010-08-13 15:13:19.000000000 -0400
+@@ -1,4 +1,4 @@
+-#! /usr/bin/python -E
++#! /usr/bin/python -Es
+ # Copyright (C) 2005, 2006, 2007 Red Hat 
+ # see file 'COPYING' for use and warranty information
+ #
+@@ -20,6 +20,7 @@
+ #                                        02111-1307  USA
+ #
+ #  
++import policycoreutils.default_encoding_utf8
+ import sys, getopt, re
+ import seobject
+ import selinux
+@@ -32,27 +33,36 @@
+ try:
+        gettext.install(PROGNAME,
+                        localedir="/usr/share/locale",
+-                       unicode=False,
++                       unicode=True,
+                        codeset = 'utf-8')
+ except IOError:
+        import __builtin__
+        __builtin__.__dict__['_'] = unicode
+ 
+ if __name__ == '__main__':
+-
++        action  = False
++        manageditems=[ "boolean", "login", "user", "port", "interface", "node", "fcontext"]
++        def set_action(option):
++               global action
++               if action:
++                      raise ValueError(_("%s bad option") % option)
++               action = True
++                      
+ 	def usage(message = ""):
+                text = _("""
+ semanage [ -S store ] -i [ input_file | - ]
++semanage [ -S store ] -o [ output_file | - ]
+ 
+-semanage {boolean|login|user|port|interface|node|fcontext} -{l|D} [-n]
++semanage {boolean|login|user|port|interface|module|node|fcontext} -{l|D|E} [-n]
+ semanage login -{a|d|m} [-sr] login_name | %groupname
+ semanage user -{a|d|m} [-LrRP] selinux_name
+ semanage port -{a|d|m} [-tr] [ -p proto ] port | port_range
+ semanage interface -{a|d|m} [-tr] interface_spec
++semanage module -{a|d|m} [--enable|--disable] module
+ semanage node -{a|d|m} [-tr] [ -p protocol ] [-M netmask] addr
+-semanage fcontext -{a|d|m} [-frst] file_spec
++semanage fcontext -{a|d|m} [-efrst] file_spec
+ semanage boolean -{d|m} [--on|--off|-1|-0] -F boolean | boolean_file
+-semanage permissive -{d|a} type
++semanage permissive -{d|a|l} type 
+ semanage dontaudit [ on | off ]
+ 
+ Primary Options:
+@@ -61,7 +71,9 @@
+ 	-d, --delete     Delete a OBJECT record NAME
+ 	-m, --modify     Modify a OBJECT record NAME
+         -i, --input      Input multiple semange commands in a transaction 
++        -o, --output     Output current customizations as semange commands 
+ 	-l, --list       List the OBJECTS
++	-E, --extract    extract customizable commands
+ 	-C, --locallist  List OBJECTS local customizations
+ 	-D, --deleteall  Remove all OBJECTS local customizations
+ 
+@@ -84,12 +96,15 @@
+         -F, --file       Treat target as an input file for command, change multiple settings
+ 	-p, --proto      Port protocol (tcp or udp) or internet protocol version of node (ipv4 or ipv6)
+ 	-M, --mask       Netmask
++        -e, --equal      Substitue source path for dest path when labeling
+ 	-P, --prefix     Prefix for home directory labeling
+ 	-L, --level      Default SELinux Level (MLS/MCS Systems only)
+ 	-R, --roles      SELinux Roles (ex: "sysadm_r staff_r")
+ 	-s, --seuser     SELinux User Name
+ 	-t, --type       SELinux Type for the object
+ 	-r, --range      MLS/MCS Security Range (MLS/MCS Systems only)
++        --enable         Enable a module
++        --disable        Disable a module
+ """)
+                raise ValueError("%s\n%s" % (text, message))
+ 		
+@@ -101,7 +116,7 @@
+ 
+ 	def get_options():
+ 		valid_option={}
+-		valid_everyone=[ '-a', '--add', '-d', '--delete', '-m', '--modify', '-l', '--list', '-h', '--help', '-n', '--noheading', '-C', '--locallist', '-D', '--deleteall', '-S', '--store' ]
++		valid_everyone=[ '-a', '--add', '-d', '--delete', '-E', '--extract', '-m', '--modify', '-l', '--list', '-h', '--help', '-n', '--noheading', '-C', '--locallist', '-D', '--deleteall', '-S', '--store' ]
+ 		valid_option["login"] = []
+ 		valid_option["login"] += valid_everyone + [ '-s', '--seuser', '-r', '--range']
+ 		valid_option["user"] = []
+@@ -112,8 +127,10 @@
+ 		valid_option["interface"] += valid_everyone + [ '-t', '--type', '-r', '--range']
+ 		valid_option["node"] = []
+ 		valid_option["node"] += valid_everyone + [ '-M', '--mask', '-t', '--type', '-r', '--range', '-p', '--protocol']
++		valid_option["module"] = []
++		valid_option["module"] += valid_everyone + [ '--enable', '--disable']
+ 		valid_option["fcontext"] = []
+-		valid_option["fcontext"] += valid_everyone + [ '-f', '--ftype', '-s', '--seuser',  '-t', '--type', '-r', '--range'] 
++		valid_option["fcontext"] += valid_everyone + [ '-e', '--equal', '-f', '--ftype', '-s', '--seuser',  '-t', '--type', '-r', '--range'] 
+ 		valid_option["dontaudit"] = [ '-S', '--store' ]
+ 		valid_option["boolean"] = []
+ 		valid_option["boolean"] += valid_everyone + [ '--on', "--off", "-1", "-0", "-F", "--file"] 
+@@ -168,6 +185,8 @@
+                return ret
+ 
+         def process_args(argv):
++                global action
++                action = False
+ 		serange = ""
+ 		port = ""
+ 		proto = ""
+@@ -184,11 +203,17 @@
+ 		modify = False
+ 		delete = False
+ 		deleteall = False
++		enable = False
++		extract = False
++		disable = False
+ 		list = False
+ 		locallist = False
+ 		use_file = False
+                 store = ""
++                equal=""
+ 			
++                if len(argv) == 0:
++                       return
+ 		object = argv[0]
+ 		option_dict=get_options()
+ 		if object not in option_dict.keys():
+@@ -197,10 +222,14 @@
+ 		args = argv[1:]
+ 
+ 		gopts, cmds = getopt.getopt(args,
+-					    '01adf:i:lhmnp:s:FCDR:L:r:t:P:S:M:',
++					    '01adEe:f:i:lhmnp:s:FCDR:L:r:t:P:S:M:',
+ 					    ['add',
+ 					     'delete',
+ 					     'deleteall',
++					     'equal=',
++					     'enable',
++					     'extract',
++					     'disable',
+ 					     'ftype=',
+ 					     'file',
+ 					     'help',
+@@ -225,29 +254,47 @@
+ 		for o, a in gopts:
+ 			if o not in option_dict[object]:
+ 				sys.stderr.write(_("%s not valid for %s objects\n") % ( o, object) );
++
++                                return
+ 				
+ 		for o,a in gopts:
+ 			if o == "-a" or o == "--add":
+-				if modify or delete:
+-                                       raise ValueError(_("%s bad option") % o)
++                                set_action(o)
+ 				add = True
+ 				
+ 			if o == "-d"  or o == "--delete":
+-				if modify or add:
+-                                       raise ValueError(_("%s bad option") % o)
++                                set_action(o)
+ 				delete = True
++
+ 			if o == "-D"  or o == "--deleteall":
+-				if modify:
+-                                       raise ValueError(_("%s bad option") % o)
++                                set_action(o)
+ 				deleteall = True
++
++			if o == "-E"  or o == "--extract":
++                                set_action(o)
++				extract = True
+ 			if o == "-f"  or o == "--ftype":
+ 				ftype=a
+ 
++			if o == "-e"  or o == "--equal":
++				equal = a
++
++			if o == "--enable":
++                                if disable:
++                                       raise ValueError(_("You can't disable and enable at the same time"))
++
++				enable = True
++
++			if o == "--disable":
++                                if enable:
++                                       raise ValueError(_("You can't disable and enable at the same time"))
++				disable = True
++
+ 			if o == "-F"  or o == "--file":
+ 				use_file = True
+ 
+ 			if o == "-h" or o == "--help":
+-                               raise ValueError(_("%s bad option") % o)
++                               raise usage()
+ 
+ 			if o == "-n" or o == "--noheading":
+ 				heading = False
+@@ -256,8 +303,7 @@
+ 				locallist = True
+ 
+ 			if o == "-m"or o == "--modify":
+-				if delete or add:
+-                                       raise ValueError(_("%s bad option") % o)
++                                set_action(o)
+ 				modify = True
+ 				
+ 			if o == "-S" or o == '--store':
+@@ -292,8 +338,10 @@
+ 
+                         if o == "--on" or o == "-1":
+                                value = "on"
++                               modify = True
+                         if o == "--off" or o == "-0":
+                                value = "off"
++                               modify = True
+ 
+ 		if object == "login":
+ 			OBJECT = seobject.loginRecords(store)
+@@ -315,6 +363,11 @@
+ 		
+ 		if object == "boolean":
+ 			OBJECT = seobject.booleanRecords(store)
++                        if use_file:
++                               modify=True
++
++		if object == "module":
++			OBJECT = seobject.moduleRecords(store)
+ 		
+ 		if object == "permissive":
+ 			OBJECT = seobject.permissiveRecords(store)
+@@ -330,65 +383,97 @@
+ 			OBJECT.deleteall()
+                         return
+ 			
++		if extract:
++                        for i in OBJECT.customized():
++                               print "%s %s" % (object, str(i))
++                        return
++			
+ 		if len(cmds) != 1:
+-                       raise ValueError(_("%s bad option") % o)
++                       raise ValueError(_("bad option"))
+                         
+                 target = cmds[0]
+ 
+-
+ 		if object == "dontaudit":
+-			OBJECT = seobject.dontauditClass(store)
+-                        OBJECT.toggle(target)
+-                        return
++                       OBJECT = seobject.dontauditClass(store)
++                       OBJECT.toggle(target)
++                       return
+                               
+ 		if add:
+ 			if object == "login":
+ 				OBJECT.add(target, seuser, serange)
++                                return
+ 
+ 			if object == "user":
+ 				OBJECT.add(target, roles.split(), selevel, serange, prefix)
++                                return
+ 
+ 			if object == "port":
+ 				OBJECT.add(target, proto, serange, setype)
++                                return
+ 
+ 			if object == "interface":
+ 				OBJECT.add(target, serange, setype)
++                                return
++
++			if object == "module":
++				OBJECT.add(target)
++                                return
+ 
+ 			if object == "node":
+ 				OBJECT.add(target, mask, proto, serange, setype)
++                                return
+ 
+ 			if object == "fcontext":
+-				OBJECT.add(target, setype, ftype, serange, seuser)
++                                if equal == "":
++                                       OBJECT.add(target, setype, ftype, serange, seuser)
++                                else:
++                                       OBJECT.add_equal(target, equal)
++                                return
+ 			if object == "permissive":
+ 				OBJECT.add(target)
++                                return
+ 
+-                        return
+-			
+ 		if modify:
+ 			if object == "boolean":
+                                OBJECT.modify(target, value, use_file)
++                               return
+ 
+ 			if object == "login":
+ 				OBJECT.modify(target, seuser, serange)
++                                return
+ 
+ 			if object == "user":
+ 				rlist = roles.split()
+ 				OBJECT.modify(target, rlist, selevel, serange, prefix)
++                                return
++
++			if object == "module":
++                                if enable:
++                                       OBJECT.enable(target)
++                                elif disable:
++                                       OBJECT.disable(target)
++                                else:
++                                       OBJECT.modify(target)
++                                return
+ 
+ 			if object == "port":
+ 				OBJECT.modify(target, proto, serange, setype)
++                                return
+ 
+ 			if object == "interface":
+ 				OBJECT.modify(target, serange, setype)
++                                return
+ 
+ 			if object == "node":
+ 				OBJECT.modify(target, mask, proto, serange, setype)
++                                return
+ 
+ 			if object == "fcontext":
+-				OBJECT.modify(target, setype, ftype, serange, seuser)
+-
+-                        return
+-
++                                if equal == "":
++                                       OBJECT.modify(target, setype, ftype, serange, seuser)
++                                else:
++                                       OBJECT.modify_equal(target, equal)
++                                return
+ 		if delete:
+ 			if object == "port":
+ 				OBJECT.delete(target, proto)
+@@ -401,15 +486,14 @@
+ 
+ 			else:
+ 				OBJECT.delete(target)
+-
+                         return
+-
+-                raise ValueError(_("Invalid command") % " ".join(argv))
++                raise ValueError(_("Invalid command: semanage %s") % " ".join(argv))
+ 
+ 	#
+ 	# 
+ 	#
+ 	try:
++               output = None
+                input = None
+                store = ""
+ 
+@@ -417,7 +501,7 @@
+                       usage(_("Requires 2 or more arguments"))
+                 
+                gopts, cmds = getopt.getopt(sys.argv[1:],
+-                                           '01adf:i:lhmnp:s:FCDR:L:r:t:T:P:S:',
++                                           '01adf:i:lhmno:p:s:FCDR:L:r:t:T:P:S:',
+                                            ['add',
+                                             'delete',
+                                             'deleteall',
+@@ -431,6 +515,7 @@
+                                             'localist',
+                                             'off', 
+                                             'on', 
++                                            'output=',
+                                             'proto=',
+                                             'seuser=',
+                                             'store=',
+@@ -438,6 +523,7 @@
+                                             'level=',
+                                             'roles=',
+                                             'type=',
++                                            'trans=',
+                                             'prefix='
+                                             ])
+                for o, a in gopts:
+@@ -445,6 +531,16 @@
+                              store = a
+                       if o == "-i" or o == '--input':
+                              input = a
++                      if o == "-o" or o == '--output':
++                             output = a
++
++               if output != None:
++                      if output != "-":
++                             sys.stdout = open(output, 'w')
++                      for i in manageditems:
++                             print "%s -D" % i
++                             process_args([i, "-E"])
++                      sys.exit(0)
+ 
+                if input != None:
+                       if input == "-":
+@@ -467,3 +563,5 @@
+ 		errorExit(_("Invalid value %s") % error.args[0])
+ 	except IOError, error:
+ 		errorExit(error.args[1])
++	except OSError, error:
++		errorExit(error.args[1])
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/semanage/semanage.8 policycoreutils-2.0.83/semanage/semanage.8
+--- nsapolicycoreutils/semanage/semanage.8	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/semanage/semanage.8	2010-07-30 13:50:40.000000000 -0400
+@@ -1,29 +1,65 @@
+-.TH "semanage" "8" "2005111103" "" ""
++.TH "semanage" "8" "20100223" "" ""
+ .SH "NAME"
+ semanage \- SELinux Policy Management tool
+ 
+ .SH "SYNOPSIS"
+-.B semanage {boolean|login|user|port|interface|node|fcontext} \-{l|D} [\-n] [\-S store]
++Output local customizations
+ .br
+-.B semanage boolean \-{d|m} [\-\-on|\-\-off|\-1|\-0] -F boolean | boolean_file
++.B semanage [ -S store ] -o [ output_file | - ]
++
++Input local customizations
++.br
++.B semanage [ -S store ] -i [ input_file | - ]
++
++Manage booleans.  Booleans allow the administrator to modify the confinement of 
++processes based on his configuration.
++.br
++.B semanage boolean [\-S store] \-{d|m|l|n|D} \-[\-on|\-off|\1|0] -F boolean | boolean_file
++
++Manage SELinux confined users (Roles and levels for an SELinux user)
++.br
++.B semanage user [\-S store] \-{a|d|m|l|n|D} [\-LrRP] selinux_name
++
++Manage login mappings between linux users and SELinux confined users.
++.br
++.B semanage login [\-S store] \-{a|d|m|l|n|D} [\-sr] login_name | %groupname
++
++Manage network port type definitions
++.br
++.B semanage port [\-S store] \-{a|d|m|l|n|D} [\-tr] [\-p proto] port | port_range
++.br
++
++Manage network interface type definitions
++.br
++.B semanage interface [\-S store] \-{a|d|m|l|n|D} [\-tr] interface_spec
++
++Manage network node type definitions
+ .br
+-.B semanage login \-{a|d|m} [\-sr] login_name | %groupname
++.B semanage node [\-S store] -{a|d|m|l|n|D} [-tr] [ -p protocol ] [-M netmask] address
+ .br
+-.B semanage user \-{a|d|m} [\-LrRP] selinux_name
++
++Manage file context mapping definitions
+ .br
+-.B semanage port \-{a|d|m} [\-tr] [\-p proto] port | port_range
++.B semanage fcontext [\-S store] \-{a|d|m|l|n|D} [\-frst] file_spec
+ .br
+-.B semanage interface \-{a|d|m} [\-tr] interface_spec
++.B semanage fcontext [\-S store] \-{a|d|m|l|n|D} \-e replacement target
+ .br
+-.B semanage node -{a|d|m} [-tr] [ -p protocol ] [-M netmask] address
++
++Manage processes type enforcement mode
+ .br
+-.B semanage fcontext \-{a|d|m} [\-frst] file_spec
++.B semanage permissive [\-S store] \-{a|d|l|n|D} type
+ .br
+-.B semanage permissive \-{a|d} type
++
++Disable/Enable dontaudit rules in policy
+ .br
+-.B semanage dontaudit [ on | off ]
++.B semanage dontaudit [\-S store] [ on | off ]
+ .P
+ 
++Execute multiple commands within a single transaction.
++.br
++.B semanage [\-S store] \-i command-file
++.br
++
+ .SH "DESCRIPTION"
+ semanage is used to configure certain elements of
+ SELinux policy without requiring modification to or recompilation
+@@ -52,6 +88,12 @@
+ .I                \-D, \-\-deleteall
+ Remove all OBJECTS local customizations
+ .TP
++.I                \-e, \-\-equal
++Substitute target path with sourcepath when generating default label.  This is used with
++fcontext. Requires source and target path arguments.  The context
++labeling for the target subtree is made equivalent to that
++defined for the source.
++.TP
+ .I                \-f, \-\-ftype
+ File Type.   This is used with fcontext.
+ Requires a file type as shown in the mode field by ls, e.g. use -d to match only directories or -- to match only regular files.
+@@ -99,26 +141,67 @@
+ .TP
+ .I                \-t, \-\-type       
+ SELinux Type for the object
++.TP
++.I                \-i
++Take a set of commands from a specified file and load them in a single
++transaction.
+ 
+ .SH EXAMPLE
+ .nf
+-# View SELinux user mappings
+-$ semanage user -l
+-# Allow joe to login as staff_u
+-$ semanage login -a -s staff_u joe
+-# Allow the group clerks to login as user_u
+-$ semanage login -a -s user_u %clerks
+-# Add file-context for everything under /web (used by restorecon)
+-$ semanage fcontext -a -t httpd_sys_content_t "/web(/.*)?"
+-# Allow Apache to listen on port 81
+-$ semanage port -a -t http_port_t -p tcp 81
+-# Change apache to a permissive domain
+-$ semanage permissive -a httpd_t
+-# Turn off dontaudit rules
+-$ semanage dontaudit off
++.B SELinux user 
++List SELinux users
++# semanage user -l
++
++.B SELinux login
++Change joe to login as staff_u
++# semanage login -a -s staff_u joe
++Change the group clerks to login as user_u
++# semanage login -a -s user_u %clerks
++
++.B File contexts
++.i remember to run restorecon after you set the file context
++Add file-context for everything under /web 
++# semanage fcontext -a -t httpd_sys_content_t "/web(/.*)?"
++# restorecon -R -v /web
++
++Substitute /home1 with /home when setting file context
++# semanage fcontext -a -e /home /home1
++# restorecon -R -v /home1
++
++For home directories under top level directory, for example /disk6/home, 
++execute the following commands.  
++# semanage fcontext -a -t home_root_t "/disk6" 
++# semanage fcontext -a -e /home /disk6/home 
++# restorecon -R -v /disk6
++
++.B Port contexts
++Allow Apache to listen on tcp port 81
++# semanage port -a -t http_port_t -p tcp 81
++
++.B Change apache to a permissive domain
++# semanage permissive -a httpd_t
++
++.B Turn off dontaudit rules
++# semanage dontaudit off
++
++.B Managing multiple machines
++Multiple machines that need the same customizations.  
++Extract customizations off first machine, copy them 
++to second and import them.
++
++# semanage -o /tmp/local.selinux
++# scp /tmp/local.selinux secondmachine:/tmp
++# ssh secondmachine
++# semanage -i /tmp/local.selinux
++
++If these customizations include file context, you need to apply the 
++context using restorecon.
++
+ .fi
+ 
+ .SH "AUTHOR"
+-This man page was written by Daniel Walsh <dwalsh@redhat.com> and
+-Russell Coker <rcoker@redhat.com>.
++This man page was written by Daniel Walsh <dwalsh@redhat.com> 
++.br
++and Russell Coker <rcoker@redhat.com>.
++.br
+ Examples by Thomas Bleher <ThomasBleher@gmx.de>.
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/semanage/seobject.py policycoreutils-2.0.83/semanage/seobject.py
+--- nsapolicycoreutils/semanage/seobject.py	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/semanage/seobject.py	2010-07-30 13:50:40.000000000 -0400
+@@ -29,47 +29,12 @@
+ import gettext
+ gettext.bindtextdomain(PROGNAME, "/usr/share/locale")
+ gettext.textdomain(PROGNAME)
+-try:
+-       gettext.install(PROGNAME, localedir = "/usr/share/locale", unicode = 1)
+-except IOError:
+-       import __builtin__
+-       __builtin__.__dict__['_'] = unicode
+-
+-import syslog
+-
+-handle = None
+-
+-def get_handle(store):
+-       global handle
+-       global is_mls_enabled
+-
+-       handle = semanage_handle_create()
+-       if not handle:
+-              raise ValueError(_("Could not create semanage handle"))
+-       
+-       if store != "":
+-              semanage_select_store(handle, store, SEMANAGE_CON_DIRECT);
+ 
+-       if not semanage_is_managed(handle):
+-              semanage_handle_destroy(handle)
+-              raise ValueError(_("SELinux policy is not managed or store cannot be accessed."))
+-
+-       rc = semanage_access_check(handle)
+-       if rc < SEMANAGE_CAN_READ:
+-              semanage_handle_destroy(handle)
+-              raise ValueError(_("Cannot read policy store."))
+-
+-       rc = semanage_connect(handle)
+-       if rc < 0:
+-              semanage_handle_destroy(handle)
+-              raise ValueError(_("Could not establish semanage connection"))
+-
+-       is_mls_enabled = semanage_mls_enabled(handle)
+-       if is_mls_enabled < 0:
+-              semanage_handle_destroy(handle)
+-              raise ValueError(_("Could not test MLS enabled status"))
++import gettext
++translation=gettext.translation(PROGNAME, localedir = "/usr/share/locale", fallback=True)
++_=translation.ugettext
+ 
+-       return handle
++import syslog
+ 
+ file_types = {}
+ file_types[""] = SEMANAGE_FCONTEXT_ALL;
+@@ -194,44 +159,153 @@
+ 		return trans
+ 	else:
+ 		return raw
+-	
++
+ class semanageRecords:
+-	def __init__(self, store):
++        transaction = False
++        handle = None
++	store = None
++
++        def __init__(self, store):
+                global handle
+                       
+-               if handle != None:
+-                      self.sh = handle
+-               else:
+-                      self.sh = get_handle(store)
+-               self.transaction = False
++               self.sh = self.get_handle(store)
++
++        def get_handle(self, store):
++               global is_mls_enabled
++
++               if semanageRecords.handle:
++                      return semanageRecords.handle
++
++               handle = semanage_handle_create()
++               if not handle:
++                      raise ValueError(_("Could not create semanage handle"))
++               
++               if not semanageRecords.transaction and store != "":
++                      semanage_select_store(handle, store, SEMANAGE_CON_DIRECT);
++		      semanageRecords.store = store
++                      
++               if not semanage_is_managed(handle):
++                      semanage_handle_destroy(handle)
++                      raise ValueError(_("SELinux policy is not managed or store cannot be accessed."))
++                      
++               rc = semanage_access_check(handle)
++               if rc < SEMANAGE_CAN_READ:
++                      semanage_handle_destroy(handle)
++                      raise ValueError(_("Cannot read policy store."))
++               
++               rc = semanage_connect(handle)
++               if rc < 0:
++                      semanage_handle_destroy(handle)
++                      raise ValueError(_("Could not establish semanage connection"))
++
++               is_mls_enabled = semanage_mls_enabled(handle)
++               if is_mls_enabled < 0:
++                      semanage_handle_destroy(handle)
++                      raise ValueError(_("Could not test MLS enabled status"))
++
++               semanageRecords.handle = handle
++               return semanageRecords.handle
+ 
+         def deleteall(self):
+                raise ValueError(_("Not yet implemented"))
+ 
+         def start(self):
+-               if self.transaction:
++               if semanageRecords.transaction:
+                       raise ValueError(_("Semanage transaction already in progress"))
+                self.begin()
+-               self.transaction = True
+-
++               semanageRecords.transaction = True
+         def begin(self):
+-               if self.transaction:
++               if semanageRecords.transaction:
+                       return
+                rc = semanage_begin_transaction(self.sh)
+                if rc < 0:
+                       raise ValueError(_("Could not start semanage transaction"))
++        def customized(self):
++               raise ValueError(_("Not yet implemented"))
++
+         def commit(self):
+-               if self.transaction:
++               if semanageRecords.transaction:
+                       return
+                rc = semanage_commit(self.sh) 
+                if rc < 0:
+                       raise ValueError(_("Could not commit semanage transaction"))
+ 
+         def finish(self):
+-               if not self.transaction:
++               if not semanageRecords.transaction:
+                       raise ValueError(_("Semanage transaction not in progress"))
+-               self.transaction = False
++               semanageRecords.transaction = False
++               self.commit()
++
++class moduleRecords(semanageRecords):
++	def __init__(self, store):
++               semanageRecords.__init__(self, store)
++
++	def get_all(self):
++               l = []
++               (rc, mlist, number) = semanage_module_list(self.sh)
++               if rc < 0:
++                      raise ValueError(_("Could not list SELinux modules"))
++
++               for i in range(number):
++                      mod = semanage_module_list_nth(mlist, i)
++                      l.append((semanage_module_get_name(mod), semanage_module_get_version(mod), semanage_module_get_enabled(mod)))
++               return l
++
++	def list(self, heading = 1, locallist = 0):
++		if heading:
++			print "\n%-25s%-10s\n" % (_("Modules Name"), _("Version"))
++                for t in self.get_all():
++                       if t[2] == 0:
++                              disabled = _("Disabled")
++                       else:
++                              disabled = ""
++                       print "%-25s%-10s%s" % (t[0], t[1], disabled)
++
++	def add(self, file):
++               rc = semanage_module_install_file(self.sh, file);
++               if rc >= 0:
++                      self.commit()
++
++	def disable(self, module):
++               need_commit = False                      
++               for m in module.split():
++                      rc = semanage_module_disable(self.sh, m)
++                      if rc < 0 and rc != -3:
++                             raise ValueError(_("Could not disable module %s (remove failed)") % m)
++                      if rc != -3:
++                             need_commit = True 
++               if need_commit:
++                      self.commit()
++			
++	def enable(self, module):
++               need_commit = False                      
++               for m in module.split():
++                      rc = semanage_module_enable(self.sh, m)
++                      if rc < 0 and rc != -3:
++                             raise ValueError(_("Could not enable module %s (remove failed)") % m)
++                      if rc != -3:
++                             need_commit = True 
++               if need_commit:
++                      self.commit()
++
++	def modify(self, file):
++               rc = semanage_module_update_file(self.sh, file);
++               if rc >= 0:
++                      self.commit()
++
++	def delete(self, module):
++               for m in module.split():
++                      rc = semanage_module_remove(self.sh, m)
++                      if rc < 0 and rc != -2:
++                             raise ValueError(_("Could not remove module %s (remove failed)") % m)
++                      
+                self.commit()
++			
++	def deleteall(self):
++               l = self.get_all()
++               if len(l) > 0:
++                      all = " ".join(l[0])
++                      self.delete(all)
+ 
+ class dontauditClass(semanageRecords):
+ 	def __init__(self, store):
+@@ -259,14 +333,23 @@
+                       name = semanage_module_get_name(mod)
+                       if name and name.startswith("permissive_"):
+                              l.append(name.split("permissive_")[1])
++
+                return l
+ 
+ 	def list(self, heading = 1, locallist = 0):
+-		if heading:
+-			print "\n%-25s\n" % (_("Permissive Types"))
+-                for t in self.get_all():
+-                       print t
++		import setools
++		all = map(lambda y: y["name"], filter(lambda x: x["permissive"], setools.seinfo(setools.TYPE)))
+ 
++		if heading:
++			print "\n%-25s\n" % (_("Builtin Permissive Types"))
++		customized = self.get_all()
++                for t in all:
++			if t not in customized:
++				print t
++		if heading:
++			print "\n%-25s\n" % (_("Customized Permissive Types"))
++		for t in customized:
++			print t
+ 
+ 	def add(self, type):
+                import glob
+@@ -343,7 +426,9 @@
+ 		if rc < 0:
+ 			raise ValueError(_("Could not check if login mapping for %s is defined") % name)
+ 		if exists:
+-			raise ValueError(_("Login mapping for %s is already defined") % name)
++                       semanage_seuser_key_free(k)
++                       return self.__modify(name, sename, serange)
++
+                 if name[0] == '%':
+                        try:
+                               grp.getgrnam(name[1:])
+@@ -475,6 +560,16 @@
+ 		
+ 		mylog.log(1, "delete SELinux user mapping", name);
+ 
++	def deleteall(self):
++		(rc, ulist) = semanage_seuser_list_local(self.sh)
++		if rc < 0:
++			raise ValueError(_("Could not list login mappings"))
++
++                self.begin()
++		for u in ulist:
++			self.__delete(semanage_seuser_get_name(u))
++                self.commit()
++
+ 	def get_all(self, locallist = 0):
+ 		ddict = {}
+                 if locallist:
+@@ -489,6 +584,15 @@
+ 			ddict[name] = (semanage_seuser_get_sename(u), semanage_seuser_get_mlsrange(u))
+ 		return ddict
+ 
++        def customized(self):
++                l = []
++                ddict = self.get_all(True)
++                keys = ddict.keys()
++                keys.sort()
++                for k in keys:
++                       l.append("-a -s %s -r '%s' %s" % (ddict[k][0], ddict[k][1], k))
++                return l
++
+ 	def list(self,heading = 1, locallist = 0):
+ 		ddict = self.get_all(locallist)
+ 		keys = ddict.keys()
+@@ -531,7 +635,8 @@
+                 if rc < 0:
+                        raise ValueError(_("Could not check if SELinux user %s is defined") % name)
+                 if exists:
+-                       raise ValueError(_("SELinux user %s is already defined") % name)
++                       semanage_user_key_free(k)
++                       return self.__modify(name, roles, selevel, serange, prefix)
+ 
+                 (rc, u) = semanage_user_create(self.sh)
+                 if rc < 0:
+@@ -682,6 +787,16 @@
+ 		
+ 		mylog.log(1,"delete SELinux user record", name)
+ 
++	def deleteall(self):
++		(rc, ulist) = semanage_user_list_local(self.sh)
++		if rc < 0:
++			raise ValueError(_("Could not list login mappings"))
++
++                self.begin()
++		for u in ulist:
++			self.__delete(semanage_user_get_name(u))
++                self.commit()
++
+ 	def get_all(self, locallist = 0):
+ 		ddict = {}
+                 if locallist:
+@@ -702,6 +817,15 @@
+ 
+ 		return ddict
+ 
++        def customized(self):
++                l = []
++                ddict = self.get_all(True)
++                keys = ddict.keys()
++                keys.sort()
++                for k in keys:
++                       l.append("-a -r %s -R '%s' %s" % (ddict[k][2], ddict[k][3], k))
++                return l
++
+ 	def list(self, heading = 1, locallist = 0):
+ 		ddict = self.get_all(locallist)
+ 		keys = ddict.keys()
+@@ -740,12 +864,16 @@
+ 			low = int(ports[0])
+ 			high = int(ports[1])
+ 
++                if high > 65536:
++                       raise ValueError(_("Invalid Port"))
++
+ 		(rc, k) = semanage_port_key_create(self.sh, low, high, proto_d)
+ 		if rc < 0:
+ 			raise ValueError(_("Could not create a key for %s/%s") % (proto, port))
+ 		return ( k, proto_d, low, high )
+ 
+ 	def __add(self, port, proto, serange, type):
++
+ 		if is_mls_enabled == 1:
+ 			if serange == "":
+ 				serange = "s0"
+@@ -808,6 +936,7 @@
+                 self.commit()
+ 
+ 	def __modify(self, port, proto, serange, setype):
++
+ 		if serange == "" and setype == "":
+ 			if is_mls_enabled == 1:
+ 				raise ValueError(_("Requires setype or serange"))
+@@ -942,6 +1071,18 @@
+ 				ddict[(ctype,proto_str)].append("%d-%d" % (low, high))
+ 		return ddict
+ 
++        def customized(self):
++                l = []
++		ddict = self.get_all(True)
++		keys = ddict.keys()
++		keys.sort()
++                for k in keys:
++                       if k[0] == k[1]:
++                              l.append("-a -t %s -p %s %s" % (ddict[k][0], k[2], k[0]))
++                       else:
++                              l.append("-a -t %s -p %s %s-%s" % (ddict[k][0], k[2], k[0], k[1]))
++                return l
++
+ 	def list(self, heading = 1, locallist = 0):
+ 		if heading:
+ 			print "%-30s %-8s %s\n" % (_("SELinux Port Type"), _("Proto"), _("Port Number"))
+@@ -958,7 +1099,8 @@
+ class nodeRecords(semanageRecords):
+        def __init__(self, store = ""):
+                semanageRecords.__init__(self,store)
+-
++               self.protocol = ["ipv4", "ipv6"]
++       
+        def __add(self, addr, mask, proto, serange, ctype):
+                if addr == "":
+                        raise ValueError(_("Node Address is required"))
+@@ -966,14 +1108,11 @@
+                if mask == "":
+                        raise ValueError(_("Node Netmask is required"))
+ 
+-	       if proto == "ipv4":
+-                       proto = 0
+-               elif proto == "ipv6":
+-                       proto = 1
+-               else:
++               try:
++                      proto = self.protocol.index(proto)
++               except:
+                       raise ValueError(_("Unknown or missing protocol"))
+ 
+-
+                if is_mls_enabled == 1:
+                        if serange == "":
+                                serange = "s0"
+@@ -991,11 +1130,13 @@
+ 
+                (rc, exists) = semanage_node_exists(self.sh, k)
+                if exists:
+-                       raise ValueError(_("Addr %s already defined") % addr)
++                       semanage_node_key_free(k)
++                       return self.__modify(addr, mask, self.protocol[proto], serange, ctype)
+ 
+                (rc, node) = semanage_node_create(self.sh)
+                if rc < 0:
+                        raise ValueError(_("Could not create addr for %s") % addr)
++               semanage_node_set_proto(node, proto)
+ 
+                rc = semanage_node_set_addr(self.sh, node, proto, addr)
+                (rc, con) = semanage_context_create(self.sh)
+@@ -1005,8 +1146,7 @@
+                rc = semanage_node_set_mask(self.sh, node, proto, mask)
+                if rc < 0:
+                        raise ValueError(_("Could not set mask for %s") % addr)
+-
+-
++	       
+                rc = semanage_context_set_user(self.sh, con, "system_u")
+                if rc < 0:
+                        raise ValueError(_("Could not set user in addr context for %s") % addr)
+@@ -1047,13 +1187,10 @@
+ 
+                if mask == "":
+                        raise ValueError(_("Node Netmask is required"))
+-               if proto == "ipv4":
+-                       proto = 0
+-               elif proto == "ipv6":
+-                       proto = 1
+-	       else:
+-		      raise ValueError(_("Unknown or missing protocol"))
+-
++               try:
++                      proto = self.protocol.index(proto)
++               except:
++                      raise ValueError(_("Unknown or missing protocol"))
+ 
+                if serange == "" and setype == "":
+                        raise ValueError(_("Requires setype or serange"))
+@@ -1068,12 +1205,11 @@
+                if not exists:
+                        raise ValueError(_("Addr %s is not defined") % addr)
+ 
+-               (rc, node) = semanage_node_query(self.sh, k)
++               (rc, node) = semanage_node_query_local(self.sh, k)
+                if rc < 0:
+                        raise ValueError(_("Could not query addr %s") % addr)
+ 
+                con = semanage_node_get_con(node)
+-
+                if serange != "":
+                        semanage_context_set_mls(self.sh, con, untranslate(serange))
+                if setype != "":
+@@ -1098,11 +1234,9 @@
+                if mask == "":
+                        raise ValueError(_("Node Netmask is required"))
+ 
+-	       if proto == "ipv4":
+-                       proto = 0
+-               elif proto == "ipv6":
+-                       proto = 1
+-               else:
++               try:
++                      proto = self.protocol.index(proto)
++               except:
+                       raise ValueError(_("Unknown or missing protocol"))
+ 
+                (rc, k) = semanage_node_key_create(self.sh, addr, mask, proto)
+@@ -1132,6 +1266,16 @@
+               self.__delete(addr, mask, proto)
+               self.commit()
+ 		
++       def deleteall(self):
++              (rc, nlist) = semanage_node_list_local(self.sh)
++              if rc < 0:
++                     raise ValueError(_("Could not deleteall node mappings"))
++              
++              self.begin()
++              for node in nlist:
++                     self.__delete(semanage_node_get_addr(self.sh, node)[1], semanage_node_get_mask(self.sh, node)[1], self.protocol[semanage_node_get_proto(node)])
++              self.commit()
++
+        def get_all(self, locallist = 0):
+                ddict = {}
+ 	       if locallist :
+@@ -1145,15 +1289,20 @@
+                        con = semanage_node_get_con(node)
+                        addr = semanage_node_get_addr(self.sh, node)
+                        mask = semanage_node_get_mask(self.sh, node)
+-                       proto = semanage_node_get_proto(node)
+-		       if proto == 0:
+-				proto = "ipv4"
+-		       elif proto == 1:
+-				proto = "ipv6"
++                       proto = self.protocol[semanage_node_get_proto(node)]
+                        ddict[(addr[1], mask[1], proto)] = (semanage_context_get_user(con), semanage_context_get_role(con), semanage_context_get_type(con), semanage_context_get_mls(con))
+ 
+                return ddict
+ 
++       def customized(self):
++               l = []
++               ddict = self.get_all(True)
++               keys = ddict.keys()
++               keys.sort()
++               for k in keys:
++                      l.append("-a -M %s -p %s -t %s %s" % (k[1], k[2],ddict[k][2], k[0]))
++               return l
++
+        def list(self, heading = 1, locallist = 0):
+                if heading:
+                        print "%-18s %-18s %-5s %-5s\n" % ("IP Address", "Netmask", "Protocol", "Context")
+@@ -1193,7 +1342,8 @@
+ 		if rc < 0:
+ 			raise ValueError(_("Could not check if interface %s is defined") % interface)
+ 		if exists:
+-			raise ValueError(_("Interface %s already defined") % interface)
++                        semanage_iface_key_free(k)
++                        return self.__modify(interface, serange, ctype)
+ 
+ 		(rc, iface) = semanage_iface_create(self.sh)
+ 		if rc < 0:
+@@ -1307,6 +1457,16 @@
+                 self.__delete(interface)
+                 self.commit()
+ 		
++        def deleteall(self):
++		(rc, ulist) = semanage_iface_list_local(self.sh)
++		if rc < 0:
++			raise ValueError(_("Could not delete all interface  mappings"))
++
++                self.begin()
++		for i in ulist:
++			self.__delete(semanage_iface_get_name(i))
++                self.commit()
++
+ 	def get_all(self, locallist = 0):
+ 		ddict = {}
+                 if locallist:
+@@ -1322,6 +1482,15 @@
+ 
+ 		return ddict
+ 			
++        def customized(self):
++                l = []
++                ddict = self.get_all(True)
++                keys = ddict.keys()
++                keys.sort()
++                for k in keys:
++                       l.append("-a -t %s %s" % (ddict[k][2], k))
++                return l
++
+ 	def list(self, heading = 1, locallist = 0):
+ 		if heading:
+ 			print "%-30s %s\n" % (_("SELinux Interface"), _("Context"))
+@@ -1338,6 +1507,48 @@
+ class fcontextRecords(semanageRecords):
+ 	def __init__(self, store = ""):
+ 		semanageRecords.__init__(self, store)
++                self.equiv = {}
++                self.equal_ind = False
++                try:
++                       fd = open(selinux.selinux_file_context_subs_path(), "r")
++                       for i in fd.readlines():
++                              src, dst = i.split()
++                              self.equiv[src] = dst
++                       fd.close()
++                except IOError:
++                       pass
++
++        def commit(self):
++                if self.equal_ind:
++                       subs_file = selinux.selinux_file_context_subs_path()
++                       tmpfile = "%s.tmp" % subs_file
++                       fd = open(tmpfile, "w")
++                       for src in self.equiv.keys():
++                              fd.write("%s %s\n" % (src, self.equiv[src]))
++                       fd.close()
++                       try:
++                              os.chmod(tmpfile, os.stat(subs_file)[stat.ST_MODE])
++                       except:
++                              pass
++                       os.rename(tmpfile,subs_file)
++                       self.equal_ind = False
++		semanageRecords.commit(self)
++
++        def add_equal(self, src, dst):
++                self.begin()
++                if src in self.equiv.keys():
++                       raise ValueError(_("Equivalence class for %s already exists") % src)
++                self.equiv[src] = dst
++                self.equal_ind = True
++                self.commit()
++
++        def modify_equal(self, src, dst):
++                self.begin()
++                if src not in self.equiv.keys():
++                       raise ValueError(_("Equivalence class for %s does not exists") % src)
++                self.equiv[src] = dst
++                self.equal_ind = True
++                self.commit()
+ 
+         def createcon(self, target, seuser = "system_u"):
+                 (rc, con) = semanage_context_create(self.sh)
+@@ -1364,6 +1575,8 @@
+         def validate(self, target):
+                if target == "" or target.find("\n") >= 0:
+                       raise ValueError(_("Invalid file specification"))
++               if target.find(" ") != -1:
++                      raise ValueError(_("File specification can not include spaces"))
+                       
+ 	def __add(self, target, type, ftype = "", serange = "", seuser = "system_u"):
+                 self.validate(target)
+@@ -1388,7 +1601,8 @@
+                               raise ValueError(_("Could not check if file context for %s is defined") % target)
+ 
+                 if exists:
+-                       raise ValueError(_("File context for %s already defined") % target)
++                       semanage_fcontext_key_free(k)
++                       return self.__modify(target, type, ftype, serange, seuser)
+ 
+ 		(rc, fcontext) = semanage_fcontext_create(self.sh)
+ 		if rc < 0:
+@@ -1504,9 +1718,16 @@
+                               raise ValueError(_("Could not delete the file context %s") % target)
+                        semanage_fcontext_key_free(k)
+ 	
++                self.equiv = {}
++                self.equal_ind = True
+                 self.commit()
+ 
+ 	def __delete(self, target, ftype):
++                if target in self.equiv.keys():
++                       self.equiv.pop(target)
++                       self.equal_ind = True
++                       return
++
+ 		(rc,k) = semanage_fcontext_key_create(self.sh, target, file_types[ftype])
+ 		if rc < 0:
+ 			raise ValueError(_("Could not create a key for %s") % target)
+@@ -1561,12 +1782,22 @@
+ 
+ 		return ddict
+ 			
++        def customized(self):
++               l = []
++               fcon_dict = self.get_all(True)
++               keys = fcon_dict.keys()
++               keys.sort()
++               for k in keys:
++                      if fcon_dict[k]:
++                             l.append("-a -f '%s' -t %s '%s'" % (k[1], fcon_dict[k][2], k[0]))
++               return l
++
+ 	def list(self, heading = 1, locallist = 0 ):
+-		if heading:
+-			print "%-50s %-18s %s\n" % (_("SELinux fcontext"), _("type"), _("Context"))
+ 		fcon_dict = self.get_all(locallist)
+                 keys = fcon_dict.keys()
+                 keys.sort()
++                if len(keys) > 0 and heading:
++			print "%-50s %-18s %s\n" % (_("SELinux fcontext"), _("type"), _("Context"))
+ 		for k in keys:
+ 			if fcon_dict[k]:
+ 				if is_mls_enabled:
+@@ -1575,6 +1806,12 @@
+ 					print "%-50s %-18s %s:%s:%s " % (k[0], k[1], fcon_dict[k][0], fcon_dict[k][1],fcon_dict[k][2])
+ 			else:
+ 				print "%-50s %-18s <<None>>" % (k[0], k[1])
++                if len(self.equiv.keys()) > 0:
++                       if heading:
++                              print _("\nSELinux fcontext Equivalence \n")
++                       
++                       for src in self.equiv.keys():
++                              print "%s = %s" % (src, self.equiv[src])
+ 				
+ class booleanRecords(semanageRecords):
+ 	def __init__(self, store = ""):
+@@ -1587,6 +1824,18 @@
+                 self.dict["1"] = 1
+                 self.dict["0"] = 0
+ 
++		try:
++			rc, self.current_booleans = selinux.security_get_boolean_names()
++			rc, ptype = selinux.selinux_getpolicytype()
++		except:
++			self.current_booleans = []
++			ptype = None
++
++		if self.store == None or self.store == ptype:
++			self.modify_local = True
++		else:
++			self.modify_local = False
++
+ 	def __mod(self, name, value):
+                 (rc, k) = semanage_bool_key_create(self.sh, name)
+                 if rc < 0:
+@@ -1606,9 +1855,10 @@
+                 else:
+                        raise ValueError(_("You must specify one of the following values: %s") % ", ".join(self.dict.keys()) )
+                 
+-                rc = semanage_bool_set_active(self.sh, k, b)
+-                if rc < 0:
+-                       raise ValueError(_("Could not set active value of boolean %s") % name)
++		if self.modify_local and name in self.current_booleans:
++			rc = semanage_bool_set_active(self.sh, k, b)
++			if rc < 0:
++				raise ValueError(_("Could not set active value of boolean %s") % name)
+                 rc = semanage_bool_modify_local(self.sh, k, b)
+                 if rc < 0:
+                        raise ValueError(_("Could not modify boolean %s") % name)
+@@ -1691,8 +1941,12 @@
+                        value = []
+                        name = semanage_bool_get_name(boolean)
+                        value.append(semanage_bool_get_value(boolean))
+-                       value.append(selinux.security_get_boolean_pending(name))
+-                       value.append(selinux.security_get_boolean_active(name))
++		       if self.modify_local and boolean in self.current_booleans:
++			       value.append(selinux.security_get_boolean_pending(name))
++			       value.append(selinux.security_get_boolean_active(name))
++		       else:
++			       value.append(value[0])
++			       value.append(value[0])
+                        ddict[name] = value
+ 
+ 		return ddict
+@@ -1706,6 +1960,16 @@
+                else:
+                       return _("unknown")
+ 
++        def customized(self):
++               l = []
++               ddict = self.get_all(True)
++               keys = ddict.keys()
++               keys.sort()
++               for k in keys:
++                      if ddict[k]:
++                             l.append("-%s %s" %  (ddict[k][2], k))
++               return l
++
+ 	def list(self, heading = True, locallist = False, use_file = False):
+                 on_off = (_("off"), _("on")) 
+ 		if use_file:
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/sepolgen-ifgen/Makefile policycoreutils-2.0.83/sepolgen-ifgen/Makefile
+--- nsapolicycoreutils/sepolgen-ifgen/Makefile	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/sepolgen-ifgen/Makefile	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,25 @@
++# Installation directories.
++PREFIX ?= ${DESTDIR}/usr
++BINDIR ?= $(PREFIX)/bin
++LIBDIR ?= ${PREFIX}/lib
++INCLUDEDIR ?= $(PREFIX)/include
++
++CFLAGS ?= -Wall -W
++override CFLAGS += -I$(INCLUDEDIR)
++LDLIBS = $(LIBDIR)/libsepol.a
++
++all: sepolgen-ifgen-attr-helper
++
++sepolgen-ifgen-attr-helper: sepolgen-ifgen-attr-helper.o
++
++install: all
++	-mkdir -p $(BINDIR)
++	install -m 755 sepolgen-ifgen-attr-helper $(BINDIR)
++
++clean:
++	rm -f *~ *.o sepolgen-ifgen-attr-helper
++
++indent:
++	../../scripts/Lindent $(wildcard *.[ch])
++
++relabel: ;
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/sepolgen-ifgen/sepolgen-ifgen-attr-helper.c policycoreutils-2.0.83/sepolgen-ifgen/sepolgen-ifgen-attr-helper.c
+--- nsapolicycoreutils/sepolgen-ifgen/sepolgen-ifgen-attr-helper.c	1969-12-31 19:00:00.000000000 -0500
++++ policycoreutils-2.0.83/sepolgen-ifgen/sepolgen-ifgen-attr-helper.c	2010-07-30 13:50:40.000000000 -0400
+@@ -0,0 +1,230 @@
++/* Authors: Frank Mayer <mayerf@tresys.com>
++ *   and Karl MacMillan <kmacmillan@tresys.com>
++ *
++ * Copyright (C) 2003,2010 Tresys Technology, LLC
++ * 
++ *	This program is free software; you can redistribute it and/or
++ *  	modify it under the terms of the GNU General Public License as
++ *  	published by the Free Software Foundation, version 2.
++ *
++ * Adapted from dispol.c.
++ *
++ * This program is used by sepolgen-ifgen to get the access for all of
++ * the attributes in the policy so that it can resolve the
++ * typeattribute statements in the interfaces.
++ *
++ * It outputs the attribute access in a similar format to what sepolgen
++ * uses to store interface vectors:
++ *   [Attribute sandbox_x_domain]
++ *   sandbox_x_domain,samba_var_t,file,ioctl,read,getattr,lock,open
++ *   sandbox_x_domain,samba_var_t,dir,getattr,search,open
++ *   sandbox_x_domain,initrc_var_run_t,file,ioctl,read,getattr,lock,open
++ *
++ */
++
++#include <sepol/policydb/policydb.h>
++#include <sepol/policydb/avtab.h>
++#include <sepol/policydb/util.h>
++
++#include <stdio.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++struct val_to_name {
++	unsigned int val;
++	char *name;
++};
++
++static int perm_name(hashtab_key_t key, hashtab_datum_t datum, void *data)
++{
++	struct val_to_name *v = data;
++	perm_datum_t *perdatum;
++
++	perdatum = (perm_datum_t *) datum;
++
++	if (v->val == perdatum->s.value) {
++		v->name = key;
++		return 1;
++	}
++
++	return 0;
++}
++
++int render_access_mask(uint32_t av, avtab_key_t *key, policydb_t *policydbp,
++		       FILE *fp)
++{
++	struct val_to_name v;
++	class_datum_t *cladatum;
++	char *perm = NULL;
++	unsigned int i;
++	int rc;
++	uint32_t tclass = key->target_class;
++
++	cladatum = policydbp->class_val_to_struct[tclass - 1];
++	for (i = 0; i < cladatum->permissions.nprim; i++) {
++		if (av & (1 << i)) {
++			v.val = i + 1;
++			rc = hashtab_map(cladatum->permissions.table,
++					 perm_name, &v);
++			if (!rc && cladatum->comdatum) {
++				rc = hashtab_map(cladatum->comdatum->
++						 permissions.table, perm_name,
++						 &v);
++			}
++			if (rc)
++				perm = v.name;
++			if (perm) {
++				fprintf(fp, ",%s", perm);
++			}
++		}
++	}
++
++	return 0;
++}
++
++static int render_key(avtab_key_t *key, policydb_t *p, FILE *fp)
++{
++	char *stype, *ttype, *tclass;
++	stype = p->p_type_val_to_name[key->source_type - 1];
++	ttype = p->p_type_val_to_name[key->target_type - 1];
++	tclass = p->p_class_val_to_name[key->target_class - 1];
++	if (stype && ttype) {
++		fprintf(fp, "%s,%s,%s", stype, ttype, tclass);
++	} else {
++		fprintf(stderr, "error rendering key\n");
++		exit(1);
++	}
++
++	return 0;
++}
++
++struct callback_data
++{
++	uint32_t attr;
++	policydb_t *policy;
++	FILE *fp;
++};
++
++int output_avrule(avtab_key_t *key, avtab_datum_t *datum, void *args)
++{
++	struct callback_data *cb_data = (struct callback_data *)args;
++
++	if (key->source_type != cb_data->attr)
++		return 0;
++
++	if (!(key->specified & AVTAB_AV && key->specified & AVTAB_ALLOWED))
++		return 0;
++
++	render_key(key, cb_data->policy, cb_data->fp);
++	render_access_mask(datum->data, key, cb_data->policy, cb_data->fp);
++	fprintf(cb_data->fp, "\n");
++
++	return 0;
++}
++
++static int attribute_callback(hashtab_key_t key, hashtab_datum_t datum, void *datap)
++{
++	struct callback_data *cb_data = (struct callback_data *)datap;
++	type_datum_t *t = (type_datum_t *)datum;
++
++	if (t->flavor == TYPE_ATTRIB) {
++		fprintf(cb_data->fp, "[Attribute %s]\n", key);
++		cb_data->attr = t->s.value;
++		if (avtab_map(&cb_data->policy->te_avtab, output_avrule, cb_data) < 0)
++			return -1;
++		if (avtab_map(&cb_data->policy->te_cond_avtab, output_avrule, cb_data) < 0)
++			return -1;
++	}
++
++	return 0;
++}
++
++static policydb_t *load_policy(const char *filename)
++{
++	policydb_t *policydb;
++	struct policy_file pf;
++	FILE *fp;
++	int ret;
++
++	fp = fopen(filename, "r");
++	if (fp == NULL) {
++		fprintf(stderr, "Can't open '%s':  %s\n",
++			filename, strerror(errno));
++		return NULL;
++	}
++
++	policy_file_init(&pf);
++	pf.type = PF_USE_STDIO;
++	pf.fp = fp;
++
++	policydb = malloc(sizeof(policydb_t));
++	if (policydb == NULL) {
++		fprintf(stderr, "Out of memory!\n");
++		return NULL;
++	}
++
++	if (policydb_init(policydb)) {
++		fprintf(stderr, "Out of memory!\n");
++		return NULL;
++	}
++
++	ret = policydb_read(policydb, &pf, 1);
++	if (ret) {
++		fprintf(stderr,
++			"error(s) encountered while parsing configuration\n");
++		return NULL;
++	}
++
++	fclose(fp);
++	
++	return policydb;
++
++}
++
++void usage(char *progname)
++{
++	printf("usage: %s policy_file out_file\n", progname);
++}
++
++int main(int argc, char **argv)
++{
++	policydb_t *p;
++	struct callback_data cb_data;
++	FILE *fp;
++
++	if (argc != 3) {
++		usage(argv[0]);
++		exit(1);
++	}
++
++	/* Open the policy. */
++	p = load_policy(argv[1]);
++	if (p == NULL) {
++		exit(1);
++	}
++
++	/* Open the output policy. */
++	fp = fopen(argv[2], "w");
++	if (fp == NULL) {
++		fprintf(stderr, "error opening output file\n");
++		policydb_destroy(p);
++		free(p);
++	}
++
++	/* Find all of the attributes and output their access. */
++	cb_data.policy = p;
++	cb_data.fp = fp;
++
++	if (hashtab_map(p->p_types.table, attribute_callback, &cb_data)) {
++		printf("error finding attributes\n");
++	}
++
++	policydb_destroy(p);
++	free(p);
++	fclose(fp);
++
++	return 0;
++}
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/setfiles/restore.c policycoreutils-2.0.83/setfiles/restore.c
+--- nsapolicycoreutils/setfiles/restore.c	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/setfiles/restore.c	2010-07-30 13:50:40.000000000 -0400
+@@ -1,4 +1,5 @@
+ #include "restore.h"
++#include <glob.h>
+ 
+ #define SKIP -2
+ #define ERR -1
+@@ -31,7 +32,6 @@
+ 
+ 
+ static file_spec_t *fl_head;
+-static int exclude(const char *file);
+ static int filespec_add(ino_t ino, const security_context_t con, const char *file);
+ static int only_changed_user(const char *a, const char *b);
+ struct restore_opts *r_opts = NULL;
+@@ -53,7 +53,6 @@
+ 		}
+ 	}
+ 	return;
+-
+ }
+ 
+ void restore_init(struct restore_opts *opts)
+@@ -300,8 +299,14 @@
+ 	int rc = 0;
+ 	const char *namelist[2] = {name, NULL};
+ 	dev_t dev_num = 0;
+-	FTS *fts_handle;
+-	FTSENT *ftsent;
++	FTS *fts_handle = NULL;
++	FTSENT *ftsent = NULL;
++
++	if (r_opts == NULL){
++		fprintf(stderr,
++			"Must call initialize first!");
++		goto err;
++	}
+ 
+ 	fts_handle = fts_open((char **)namelist, r_opts->fts_flags, NULL);
+ 	if (fts_handle  == NULL) {
+@@ -357,11 +362,34 @@
+ 	goto out;
+ }
+ 
++int process_glob(char *name, int recurse) {
++	glob_t globbuf;
++	size_t i = 0;
++	int errors = 0;
++	memset(&globbuf, 0, sizeof(globbuf));
++	globbuf.gl_offs = 0;
++	if (glob(name,
++		 GLOB_TILDE | GLOB_PERIOD,
++		 NULL,
++		 &globbuf) >= 0) {
++		for (i = 0; i < globbuf.gl_pathc; i++) {
++			int len = strlen(globbuf.gl_pathv[i]) -2;
++			if (len > 0 && strcmp(&globbuf.gl_pathv[i][len--], "/.") == 0) continue;
++			if (len > 0 && strcmp(&globbuf.gl_pathv[i][len], "/..") == 0) continue;
++			errors |= process_one_realpath(globbuf.gl_pathv[i], recurse) < 0;
++		}
++		globfree(&globbuf);
++	}
++	else
++		errors |= process_one_realpath(name, recurse) < 0;
++	return errors;
++}
++
+ int process_one_realpath(char *name, int recurse)
+ {
+ 	int rc = 0;
+ 	char *p;
+-	struct stat sb;
++	struct stat64 sb;
+ 
+ 	if (r_opts == NULL){
+ 		fprintf(stderr,
+@@ -372,8 +400,9 @@
+ 	if (!r_opts->expand_realpath) {
+ 		return process_one(name, recurse);
+ 	} else {
+-		rc = lstat(name, &sb);
++		rc = lstat64(name, &sb);
+ 		if (rc < 0) {
++			if (r_opts->ignore_enoent && errno == ENOENT) return 0;
+ 			fprintf(stderr, "%s:  lstat(%s) failed:  %s\n",
+ 				r_opts->progname, name,	strerror(errno));
+ 			return -1;
+@@ -409,7 +438,7 @@
+ 	}
+ }
+ 
+-static int exclude(const char *file)
++int exclude(const char *file)
+ {
+ 	int i = 0;
+ 	for (i = 0; i < excludeCtr; i++) {
+@@ -537,7 +566,7 @@
+ {
+ 	file_spec_t *prevfl, *fl;
+ 	int h, ret;
+-	struct stat sb;
++	struct stat64 sb;
+ 
+ 	if (!fl_head) {
+ 		fl_head = malloc(sizeof(file_spec_t) * HASH_BUCKETS);
+@@ -550,7 +579,7 @@
+ 	for (prevfl = &fl_head[h], fl = fl_head[h].next; fl;
+ 	     prevfl = fl, fl = fl->next) {
+ 		if (ino == fl->ino) {
+-			ret = lstat(fl->file, &sb);
++			ret = lstat64(fl->file, &sb);
+ 			if (ret < 0 || sb.st_ino != ino) {
+ 				freecon(fl->con);
+ 				free(fl->file);
+@@ -602,5 +631,67 @@
+ 	return -1;
+ }
+ 
++#include <sys/utsname.h>
++/*
++   Search /proc/mounts for all file systems that do not support extended
++   attributes and add them to the exclude directory table.  File systems
++   that support security labels have the seclabel option.
++*/
++void exclude_non_seclabel_mounts()
++{
++	struct utsname uts;
++	FILE *fp;
++	size_t len;
++	ssize_t num;
++	int index = 0, found = 0;
++	char *mount_info[4];
++	char *buf = NULL, *item;
++
++	/* Check to see if the kernel supports seclabel */
++	if (uname(&uts) == 0 && strverscmp(uts.release, "2.6.30") < 0)
++		return;
++	if (is_selinux_enabled() <= 0)
++		return;
++
++	fp = fopen("/proc/mounts", "r");
++	if (!fp)
++		return;
++
++	while ((num = getline(&buf, &len, fp)) != -1) {
++		found = 0;
++		index = 0;
++		item = strtok(buf, " ");
++		while (item != NULL) {
++			mount_info[index] = item;
++			if (index == 3)
++				break;
++			index++;
++			item = strtok(NULL, " ");
++		}
++		if (index < 3) {
++			fprintf(stderr,
++				"/proc/mounts record \"%s\" has incorrect format.\n",
++				buf);
++			continue;
++		}
+ 
++		/* remove pre-existing entry */
++		remove_exclude(mount_info[1]);
++
++		item = strtok(mount_info[3], ",");
++		while (item != NULL) {
++			if (strcmp(item, "seclabel") == 0) {
++				found = 1;
++				break;
++			}
++			item = strtok(NULL, ",");
++		}
++
++		/* exclude mount points without the seclabel option */
++		if (!found)
++			add_exclude(mount_info[1]);
++	}
++
++	free(buf);
++}
+ 
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/setfiles/restorecon.8 policycoreutils-2.0.83/setfiles/restorecon.8
+--- nsapolicycoreutils/setfiles/restorecon.8	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/setfiles/restorecon.8	2010-07-30 13:50:40.000000000 -0400
+@@ -4,10 +4,10 @@
+ 
+ .SH "SYNOPSIS"
+ .B restorecon
+-.I [\-o outfilename ] [\-R] [\-n] [\-v] [\-e directory ] pathname...
++.I [\-o outfilename ] [\-R] [\-n] [\-p] [\-v] [\-e directory ] pathname...
+ .P
+ .B restorecon
+-.I \-f infilename [\-o outfilename ] [\-e directory ] [\-R] [\-n] [\-v] [\-F]
++.I \-f infilename [\-o outfilename ] [\-e directory ] [\-R] [\-n] [\-p] [\-v] [\-F]
+ 
+ .SH "DESCRIPTION"
+ This manual page describes the
+@@ -40,6 +40,9 @@
+ .TP 
+ .B \-o outfilename
+ save list of files with incorrect context in outfilename.
++.TP
++.B \-p
++show progress by printing * every 1000 files.
+ .TP 
+ .B \-v
+ show changes in file labels.
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/setfiles/restore.h policycoreutils-2.0.83/setfiles/restore.h
+--- nsapolicycoreutils/setfiles/restore.h	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/setfiles/restore.h	2010-07-30 13:50:40.000000000 -0400
+@@ -27,6 +27,7 @@
+ 	int hard_links;
+ 	int verbose;
+ 	int logging;
++	int ignore_enoent;
+ 	char *rootpath;
+ 	int rootpathlen;
+ 	char *progname;
+@@ -44,7 +45,10 @@
+ void restore_init(struct restore_opts *opts);
+ void restore_finish();
+ int add_exclude(const char *directory);
++int exclude(const char *path);
+ void remove_exclude(const char *directory);
+ int process_one_realpath(char *name, int recurse);
++int process_glob(char *name, int recurse);
+ 
++void exclude_non_seclabel_mounts();
+ #endif
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/setfiles/setfiles.8 policycoreutils-2.0.83/setfiles/setfiles.8
+--- nsapolicycoreutils/setfiles/setfiles.8	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/setfiles/setfiles.8	2010-07-30 13:50:40.000000000 -0400
+@@ -31,6 +31,9 @@
+ .TP
+ .B \-n
+ don't change any file labels.
++.TP
++.B \-p
++show progress by printing * every 1000 files.
+ .TP 
+ .B \-q
+ suppress non-error output.
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/setfiles/setfiles.c policycoreutils-2.0.83/setfiles/setfiles.c
+--- nsapolicycoreutils/setfiles/setfiles.c	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/setfiles/setfiles.c	2010-07-30 13:50:40.000000000 -0400
+@@ -5,7 +5,6 @@
+ #include <ctype.h>
+ #include <regex.h>
+ #include <sys/vfs.h>
+-#include <sys/utsname.h>
+ #define __USE_XOPEN_EXTENDED 1	/* nftw */
+ #include <libgen.h>
+ #ifdef USE_AUDIT
+@@ -25,7 +24,6 @@
+ static int warn_no_match = 0;
+ static int null_terminated = 0;
+ static int errors;
+-static int ignore_enoent;
+ static struct restore_opts r_opts;
+ 
+ #define STAT_BLOCK_SIZE 1
+@@ -44,13 +42,13 @@
+ {
+ 	if (iamrestorecon) {
+ 		fprintf(stderr,
+-			"usage:  %s [-iFnrRv0] [-e excludedir ] [-o filename ] [-f filename | pathname... ]\n",
++			"usage:  %s [-iFnprRv0] [-e excludedir ] [-o filename ] [-f filename | pathname... ]\n",
+ 			name);
+ 	} else {
+ 		fprintf(stderr,
+ 			"usage:  %s [-dnpqvW] [-o filename] [-r alt_root_path ] spec_file pathname...\n"
+ 			"usage:  %s -c policyfile spec_file\n"
+-			"usage:  %s -s [-dnqvW] [-o filename ] spec_file\n", name, name,
++			"usage:  %s -s [-dnpqvW] [-o filename ] spec_file\n", name, name,
+ 			name);
+ 	}
+ 	exit(1);
+@@ -138,69 +136,6 @@
+ #endif
+ }
+ 
+-/*
+-   Search /proc/mounts for all file systems that do not support extended
+-   attributes and add them to the exclude directory table.  File systems
+-   that support security labels have the seclabel option.
+-*/
+-static void exclude_non_seclabel_mounts()
+-{
+-	struct utsname uts;
+-	FILE *fp;
+-	size_t len;
+-	ssize_t num;
+-	int index = 0, found = 0;
+-	char *mount_info[4];
+-	char *buf = NULL, *item;
+-
+-	/* Check to see if the kernel supports seclabel */
+-	if (uname(&uts) == 0 && strverscmp(uts.release, "2.6.30") < 0)
+-		return;
+-	if (is_selinux_enabled() <= 0)
+-		return;
+-
+-	fp = fopen("/proc/mounts", "r");
+-	if (!fp)
+-		return;
+-
+-	while ((num = getline(&buf, &len, fp)) != -1) {
+-		found = 0;
+-		index = 0;
+-		item = strtok(buf, " ");
+-		while (item != NULL) {
+-			mount_info[index] = item;
+-			if (index == 3)
+-				break;
+-			index++;
+-			item = strtok(NULL, " ");
+-		}
+-		if (index < 3) {
+-			fprintf(stderr,
+-				"/proc/mounts record \"%s\" has incorrect format.\n",
+-				buf);
+-			continue;
+-		}
+-
+-		/* remove pre-existing entry */
+-		remove_exclude(mount_info[1]);
+-
+-		item = strtok(mount_info[3], ",");
+-		while (item != NULL) {
+-			if (strcmp(item, "seclabel") == 0) {
+-				found = 1;
+-				break;
+-			}
+-			item = strtok(NULL, ",");
+-		}
+-
+-		/* exclude mount points without the seclabel option */
+-		if (!found)
+-			add_exclude(mount_info[1]);
+-	}
+-
+-	free(buf);
+-}
+-
+ int main(int argc, char **argv)
+ {
+ 	struct stat sb;
+@@ -335,7 +270,7 @@
+ 			r_opts.debug = 1;
+ 			break;
+ 		case 'i':
+-			ignore_enoent = 1;
++			r_opts.ignore_enoent = 1;
+ 			break;
+ 		case 'l':
+ 			r_opts.logging = 1;
+@@ -371,7 +306,7 @@
+ 				break;
+ 			}
+ 			if (optind + 1 >= argc) {
+-				fprintf(stderr, "usage:  %s -r r_opts.rootpath\n",
++				fprintf(stderr, "usage:  %s -r rootpath\n",
+ 					argv[0]);
+ 				exit(1);
+ 			}
+@@ -475,7 +410,7 @@
+ 			buf[len - 1] = 0;
+ 			if (!strcmp(buf, "/"))
+ 				mass_relabel = 1;
+-			errors |= process_one_realpath(buf, recurse) < 0;
++			errors |= process_glob(buf, recurse) < 0;
+ 		}
+ 		if (strcmp(input_filename, "-") != 0)
+ 			fclose(f);
+@@ -483,7 +418,8 @@
+ 		for (i = optind; i < argc; i++) {
+ 			if (!strcmp(argv[i], "/"))
+ 				mass_relabel = 1;
+-			errors |= process_one_realpath(argv[i], recurse) < 0;
++
++			errors |= process_glob(argv[i], recurse) < 0;
+ 		}
+ 	}
+ 	
+diff --exclude-from=exclude --exclude=sepolgen-1.0.23 --exclude=gui --exclude=po -N -u -r nsapolicycoreutils/VERSION policycoreutils-2.0.83/VERSION
+--- nsapolicycoreutils/VERSION	2010-06-16 08:03:38.000000000 -0400
++++ policycoreutils-2.0.83/VERSION	2010-07-30 13:50:40.000000000 -0400
+@@ -1 +1 @@
+-2.0.83
++2.0.82

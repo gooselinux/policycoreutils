@@ -1,0 +1,177 @@
+diff -up policycoreutils-2.0.83/gui/polgen.py.rhel6 policycoreutils-2.0.83/gui/polgen.py
+--- policycoreutils-2.0.83/gui/polgen.py.rhel6	2010-08-25 08:40:04.000000000 -0400
++++ policycoreutils-2.0.83/gui/polgen.py	2010-08-25 08:40:04.000000000 -0400
+@@ -39,6 +39,7 @@ from templates import rw
+ from templates import network
+ from templates import script
+ from templates import user
++import seobject
+ import sepolgen.interfaces as interfaces
+ import sepolgen.defaults as defaults
+ 
+@@ -192,11 +193,8 @@ def verify_ports(ports):
+ class policy:
+     
+ 	def __init__(self, name, type):
+-                self.ports = []
+-                try:
+-                    self.ports = get_all_ports()
+-                except ValueError, e:
+-                    print "Can not get port types, must be root for this information"
++                ports = seobject.portRecords()
++                self.ports = ports.get_all()
+ 
+                 self.symbols = {} 
+                 self.symbols["openlog"] = "set_use_kerberos(True)"
+diff -up policycoreutils-2.0.83/sandbox/sandbox.rhel6 policycoreutils-2.0.83/sandbox/sandbox
+--- policycoreutils-2.0.83/sandbox/sandbox.rhel6	2010-08-25 08:40:03.000000000 -0400
++++ policycoreutils-2.0.83/sandbox/sandbox	2010-08-25 08:41:19.000000000 -0400
+@@ -50,6 +50,14 @@ SAVE_FILES = {}
+ 
+ random.seed(None)
+ 
++def chcon(path, context, recursive=False):
++    """ Set the SELinux context on a given path """
++    selinux.lsetfilecon(path, context)
++    if recursive:
++        for root, dirs, files in os.walk(path):
++            for name in files + dirs:
++               selinux.lsetfilecon(os.path.join(root,name), context)
++
+ def sighandler(signum, frame):
+     signal.signal(signum,  signal.SIG_IGN)
+     os.kill(0, signum)
+@@ -230,7 +238,7 @@ class Sandbox:
+ /usr/bin/test -r ~/.xmodmap && /usr/bin/xmodmap ~/.xmodmap
+ %s &
+ WM_PID=$!
+-dbus-launch %s
++dbus-launch --exit-with-session %s
+ kill -TERM $WM_PID  2> /dev/null
+ """ % (command, wm, command))
+            fd.close()
+@@ -350,14 +358,14 @@ sandbox [-h] [-l level ] [-[X|M] [-H hom
+                   os.mkdir(sandboxdir)
+ 
+            if self.__options.homedir:
+-                  selinux.chcon(self.__options.homedir, self.__filecon, recursive=True)
++                  chcon(self.__options.homedir, self.__filecon, recursive=True)
+                   self.__homedir = self.__options.homedir
+            else:
+                   selinux.setfscreatecon(self.__filecon)
+                   self.__homedir = mkdtemp(dir=sandboxdir, prefix=".sandbox")
+ 
+            if self.__options.tmpdir:
+-                  selinux.chcon(self.__options.tmpdir, self.__filecon, recursive=True)
++                  chcon(self.__options.tmpdir, self.__filecon, recursive=True)
+                   self.__tmpdir = self.__options.tmpdir
+            else:
+                   selinux.setfscreatecon(self.__filecon)
+diff -up policycoreutils-2.0.83/sandbox/sandboxX.sh.rhel6 policycoreutils-2.0.83/sandbox/sandboxX.sh
+--- policycoreutils-2.0.83/sandbox/sandboxX.sh.rhel6	2010-08-25 08:43:22.000000000 -0400
++++ policycoreutils-2.0.83/sandbox/sandboxX.sh	2010-08-25 08:43:35.000000000 -0400
+@@ -7,7 +7,16 @@ trap "exit 0" HUP
+ 
+ (/usr/bin/Xephyr -title "$TITLE" -terminate -screen $SCREENSIZE -displayfd 5 5>&1 2>/dev/null) | while read D; do 
+     export DISPLAY=:$D
+-    python -c 'import gtk, os, commands; commands.getstatusoutput("%s/.sandboxrc" % os.environ["HOME"])'
++    python << __EOF
++import gtk, os, commands
++rc = [-1,'']
++try:
++    rc=commands.getstatusoutput("%s/.sandboxrc" % os.environ["HOME"])
++except:
++    pass
++if rc[0] == 0:
++    print rc[1]
++__EOF
+     export EXITCODE=$?
+     kill -HUP 0
+     break
+diff -up policycoreutils-2.0.83/sandbox/seunshare.c.rhel6 policycoreutils-2.0.83/sandbox/seunshare.c
+--- policycoreutils-2.0.83/sandbox/seunshare.c.rhel6	2010-08-25 08:43:46.000000000 -0400
++++ policycoreutils-2.0.83/sandbox/seunshare.c	2010-08-25 08:44:25.000000000 -0400
+@@ -6,6 +6,7 @@
+ #define _GNU_SOURCE
+ #include <signal.h>
+ #include <sys/types.h>
++#include <sys/stat.h>
+ #include <sys/wait.h>
+ #include <syslog.h>
+ #include <sys/mount.h>
+@@ -22,13 +23,11 @@
+ #include <limits.h>
+ #include <stdlib.h>
+ #include <errno.h>
++#include <fcntl.h>
+ 
+ #include <selinux/selinux.h>
+ #include <selinux/context.h>	/* for context-mangling functions */
+ 
+-#include <sys/types.h>
+-#include <sys/stat.h>
+-
+ #ifdef USE_NLS
+ #include <locale.h>		/* for setlocale() */
+ #include <libintl.h>		/* for gettext() */
+@@ -146,17 +145,23 @@ static int verify_shell(const char *shel
+ static int seunshare_mount(const char *src, const char *dst, struct passwd *pwd) {
+ 	if (verbose)
+ 		printf("Mount %s on %s\n", src, dst);
+-	if (mount(dst, dst,  NULL, MS_BIND | MS_REC, NULL) < 0) {
++
++	int flags = MS_REC;
++	if (strcmp("/tmp", dst) == 0) {
++		flags = flags | MS_NODEV | MS_NOSUID | MS_NOEXEC;
++	}
++
++	if (mount(dst, dst,  NULL, MS_BIND | flags, NULL) < 0) {
+ 		fprintf(stderr, _("Failed to mount %s on %s: %s\n"), dst, dst, strerror(errno));
+ 		return -1;
+ 	}
+ 
+-	if (mount(dst, dst, NULL, MS_PRIVATE | MS_REC, NULL) < 0) {
++	if (mount(dst, dst, NULL, MS_PRIVATE | flags, NULL) < 0) {
+ 		fprintf(stderr, _("Failed to make %s private: %s\n"), dst, strerror(errno));
+ 		return -1;
+ 	}
+ 
+-	if (mount(src, dst, NULL, MS_BIND | MS_REC, NULL) < 0) {
++	if (mount(src, dst, NULL, MS_BIND | flags, NULL) < 0) {
+ 		fprintf(stderr, _("Failed to mount %s on %s: %s\n"), src, dst, strerror(errno));
+ 		return -1;
+ 	}
+@@ -164,7 +169,25 @@ static int seunshare_mount(const char *s
+ 	if (verify_mount(dst, pwd) < 0) 
+ 		return -1;
+ 
++	if (strcmp("/tmp", dst) == 0) {
++		struct stat sb;
++		int fd = open(dst,O_RDONLY);
++		if ( fd == -1 ) goto err;
++		if (fstat(fd, &sb) == -1) {
++			close(fd);
++			goto err;
++		}
++		if (fchmod(fd, sb.st_mode | S_ISVTX) < 0) {
++			close(fd);
++			goto err;
++		}
++		close(fd);
++	}
++
+ 	return 0;
++err:
++	fprintf(stderr, _("Invalid mount point %s: %s\n"), src, strerror(errno));
++	return -1;
+ }
+ 
+ #define USAGE_STRING _("USAGE: seunshare [ -v ] [ -t tmpdir ] [ -h homedir ] [-Z CONTEXT] --  executable [args] ")
+@@ -515,7 +538,6 @@ int main(int argc, char **argv) {
+ 			perror(_("Failed to change dir to homedir"));
+ 			exit(-1);
+ 		}
+-		setsid();
+ 		execv(argv[optind], argv + optind);
+ 		free(display);
+ 		freecon(scontext);

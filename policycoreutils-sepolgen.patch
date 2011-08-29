@@ -1,0 +1,502 @@
+diff --exclude-from=exclude -N -u -r nsasepolgen/src/sepolgen/access.py policycoreutils-2.0.83/sepolgen-1.0.23/src/sepolgen/access.py
+--- nsasepolgen/src/sepolgen/access.py	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/sepolgen-1.0.23/src/sepolgen/access.py	2010-06-16 08:22:43.000000000 -0400
+@@ -32,6 +32,7 @@
+ """
+ 
+ import refpolicy
++from selinux import audit2why
+ 
+ def is_idparam(id):
+     """Determine if an id is a paramater in the form $N, where N is
+@@ -85,6 +86,8 @@
+             self.obj_class = None
+             self.perms = refpolicy.IdSet()
+             self.audit_msgs = []
++            self.type = audit2why.TERULE
++            self.bools = []
+ 
+         # The direction of the information flow represented by this
+         # access vector - used for matching
+@@ -253,20 +256,22 @@
+         for av in l:
+             self.add_av(AccessVector(av))
+ 
+-    def add(self, src_type, tgt_type, obj_class, perms, audit_msg=None):
++    def add(self, src_type, tgt_type, obj_class, perms, audit_msg=None, avc_type=audit2why.TERULE, bools=[]):
+         """Add an access vector to the set.
+         """
+         tgt = self.src.setdefault(src_type, { })
+         cls = tgt.setdefault(tgt_type, { })
+         
+-        if cls.has_key(obj_class):
+-            access = cls[obj_class]
++        if cls.has_key((obj_class, avc_type)):
++            access = cls[obj_class, avc_type]
+         else:
+             access = AccessVector()
+             access.src_type = src_type
+             access.tgt_type = tgt_type
+             access.obj_class = obj_class
+-            cls[obj_class] = access
++            access.bools = bools
++            access.type = avc_type
++            cls[obj_class, avc_type] = access
+ 
+         access.perms.update(perms)
+         if audit_msg:
+diff --exclude-from=exclude -N -u -r nsasepolgen/src/sepolgen/audit.py policycoreutils-2.0.83/sepolgen-1.0.23/src/sepolgen/audit.py
+--- nsasepolgen/src/sepolgen/audit.py	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/sepolgen-1.0.23/src/sepolgen/audit.py	2010-06-16 08:22:43.000000000 -0400
+@@ -68,6 +68,17 @@
+                               stdout=subprocess.PIPE).communicate()[0]
+     return output
+ 
++def get_log_msgs():
++    """Obtain all of the avc and policy load messages from /var/log/messages.
++
++    Returns:
++       string contain all of the audit messages returned by /var/log/messages.
++    """
++    import subprocess
++    output = subprocess.Popen(["/bin/grep", "avc",  "/var/log/messages"],
++                              stdout=subprocess.PIPE).communicate()[0]
++    return output
++
+ # Classes representing audit messages
+ 
+ class AuditMessage:
+@@ -127,6 +138,9 @@
+             if fields[0] == "path":
+                 self.path = fields[1][1:-1]
+                 return
++import selinux.audit2why as audit2why
++
++avcdict = {}
+ 
+ class AVCMessage(AuditMessage):
+     """AVC message representing an access denial or granted message.
+@@ -167,6 +181,8 @@
+         self.path = ""
+         self.accesses = []
+         self.denial = True
++        self.type = audit2why.TERULE
++        self.bools = []
+ 
+     def __parse_access(self, recs, start):
+         # This is kind of sucky - the access that is in a space separated
+@@ -226,7 +242,31 @@
+ 
+         if not found_src or not found_tgt or not found_class or not found_access:
+             raise ValueError("AVC message in invalid format [%s]\n" % self.message)
+-                
++        self.analyze()
++
++    def analyze(self):
++        tcontext = self.tcontext.to_string()
++        scontext = self.scontext.to_string()
++        access_tuple = tuple( self.accesses)
++        if (scontext, tcontext, self.tclass, access_tuple) in avcdict.keys():
++            self.type, self.bools = avcdict[(scontext, tcontext, self.tclass, access_tuple)]
++        else:
++            self.type, self.bools = audit2why.analyze(scontext, tcontext, self.tclass, self.accesses);
++            if self.type == audit2why.NOPOLICY:
++                self.type = audit2why.TERULE
++            if self.type == audit2why.BADTCON:
++                raise ValueError("Invalid Target Context %s\n" % tcontext)
++            if self.type == audit2why.BADSCON:
++                raise ValueError("Invalid Source Context %s\n" % scontext)
++            if self.type == audit2why.BADSCON:
++                raise ValueError("Invalid Type Class %s\n" % self.tclass)
++            if self.type == audit2why.BADPERM:
++                raise ValueError("Invalid permission %s\n" % " ".join(self.accesses))
++            if self.type == audit2why.BADCOMPUTE:
++                raise ValueError("Error during access vector computation")
++            
++            avcdict[(scontext, tcontext, self.tclass, access_tuple)] = (self.type, self.bools)
++
+ class PolicyLoadMessage(AuditMessage):
+     """Audit message indicating that the policy was reloaded."""
+     def __init__(self, message):
+@@ -469,10 +509,10 @@
+             if avc_filter:
+                 if avc_filter.filter(avc):
+                     av_set.add(avc.scontext.type, avc.tcontext.type, avc.tclass,
+-                               avc.accesses, avc)
++                               avc.accesses, avc, avc_type=avc.type, bools=avc.bools)
+             else:
+                 av_set.add(avc.scontext.type, avc.tcontext.type, avc.tclass,
+-                           avc.accesses, avc)
++                           avc.accesses, avc, avc_type=avc.type, bools=avc.bools)
+         return av_set
+ 
+ class AVCTypeFilter:
+diff --exclude-from=exclude -N -u -r nsasepolgen/src/sepolgen/defaults.py policycoreutils-2.0.83/sepolgen-1.0.23/src/sepolgen/defaults.py
+--- nsasepolgen/src/sepolgen/defaults.py	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/sepolgen-1.0.23/src/sepolgen/defaults.py	2010-06-16 08:22:43.000000000 -0400
+@@ -30,6 +30,9 @@
+ def interface_info():
+     return data_dir() + "/interface_info"
+ 
++def attribute_info():
++    return data_dir() + "/attribute_info"
++
+ def refpolicy_devel():
+     return "/usr/share/selinux/devel"
+ 
+diff --exclude-from=exclude -N -u -r nsasepolgen/src/sepolgen/interfaces.py policycoreutils-2.0.83/sepolgen-1.0.23/src/sepolgen/interfaces.py
+--- nsasepolgen/src/sepolgen/interfaces.py	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/sepolgen-1.0.23/src/sepolgen/interfaces.py	2010-06-16 08:22:43.000000000 -0400
+@@ -29,6 +29,8 @@
+ 
+ from sepolgeni18n import _
+ 
++import copy
++
+ class Param:
+     """
+     Object representing a paramater for an interface.
+@@ -197,10 +199,48 @@
+                 ret = 1
+ 
+     return ret
+-            
++
++class AttributeVector:
++    def __init__(self):
++        self.name = ""
++        self.access = access.AccessVectorSet()
++
++    def add_av(self, av):
++        self.access.add_av(av)
++
++class AttributeSet:
++    def __init__(self):
++        self.attributes = { }
++
++    def add_attr(self, attr):
++        self.attributes[attr.name] = attr
++
++    def from_file(self, fd):
++        def parse_attr(line):
++            fields = line[1:-1].split()
++            if len(fields) != 2 or fields[0] != "Attribute":
++                raise SyntaxError("Syntax error Attribute statement %s" % line)
++            a = AttributeVector()
++            a.name = fields[1]
++
++            return a
++
++        a = None
++        for line in fd:
++            line = line[:-1]
++            if line[0] == "[":
++                if a:
++                    self.add_attr(a)
++                a = parse_attr(line)
++            elif a:
++                l = line.split(",")
++                av = access.AccessVector(l)
++                a.add_av(av)
++        if a:
++            self.add_attr(a)
+ 
+ class InterfaceVector:
+-    def __init__(self, interface=None):
++    def __init__(self, interface=None, attributes={}):
+         # Enabled is a loose concept currently - we are essentially
+         # not enabling interfaces that we can't handle currently.
+         # See InterfaceVector.add_ifv for more information.
+@@ -214,10 +254,10 @@
+         # value: Param object).
+         self.params = { }
+         if interface:
+-            self.from_interface(interface)
++            self.from_interface(interface, attributes)
+         self.expanded = False
+ 
+-    def from_interface(self, interface):
++    def from_interface(self, interface, attributes={}):
+         self.name = interface.name
+ 
+         # Add allow rules
+@@ -232,6 +272,23 @@
+             for av in avs:
+                 self.add_av(av)
+ 
++        # Add typeattribute access
++        if attributes != None:
++            for typeattribute in interface.typeattributes():
++                for attr in typeattribute.attributes:
++                    if not attributes.attributes.has_key(attr):
++                        # print "missing attribute " + attr
++                        continue
++                    attr_vec = attributes.attributes[attr]
++                    for a in attr_vec.access:
++                        av = copy.copy(a)
++                        if av.src_type == attr_vec.name:
++                            av.src_type = typeattribute.type
++                        if av.tgt_type == attr_vec.name:
++                            av.tgt_type = typeattribute.type
++                        self.add_av(av)
++
++
+         # Extract paramaters from roles
+         for role in interface.roles():
+             if role_extract_params(role, self.params):
+@@ -346,13 +403,13 @@
+                 l = self.tgt_type_map.setdefault(type, [])
+                 l.append(ifv)
+ 
+-    def add(self, interface):
+-        ifv = InterfaceVector(interface)
++    def add(self, interface, attributes={}):
++        ifv = InterfaceVector(interface, attributes)
+         self.add_ifv(ifv)
+ 
+-    def add_headers(self, headers, output=None):
++    def add_headers(self, headers, output=None, attributes={}):
+         for i in itertools.chain(headers.interfaces(), headers.templates()):
+-            self.add(i)
++            self.add(i, attributes)
+ 
+         self.expand_ifcalls(headers)
+         self.index()
+diff --exclude-from=exclude -N -u -r nsasepolgen/src/sepolgen/matching.py policycoreutils-2.0.83/sepolgen-1.0.23/src/sepolgen/matching.py
+--- nsasepolgen/src/sepolgen/matching.py	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/sepolgen-1.0.23/src/sepolgen/matching.py	2010-06-16 08:22:43.000000000 -0400
+@@ -50,7 +50,7 @@
+                 return 1
+ 
+ class MatchList:
+-    DEFAULT_THRESHOLD = 120
++    DEFAULT_THRESHOLD = 150
+     def __init__(self):
+         # Match objects that pass the threshold
+         self.children = []
+@@ -63,14 +63,15 @@
+     def best(self):
+         if len(self.children):
+             return self.children[0]
+-        else:
+-            return None
++        if len(self.bastards):
++            return self.bastards[0]
++        return None
+ 
+     def __len__(self):
+         # Only return the length of the matches so
+         # that this can be used to test if there is
+         # a match.
+-        return len(self.children)
++        return len(self.children) + len(self.bastards)
+ 
+     def __iter__(self):
+         return iter(self.children)
+diff --exclude-from=exclude -N -u -r nsasepolgen/src/sepolgen/policygen.py policycoreutils-2.0.83/sepolgen-1.0.23/src/sepolgen/policygen.py
+--- nsasepolgen/src/sepolgen/policygen.py	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/sepolgen-1.0.23/src/sepolgen/policygen.py	2010-06-21 10:10:01.000000000 -0400
+@@ -29,6 +29,8 @@
+ import access
+ import interfaces
+ import matching
++import selinux.audit2why as audit2why
++from setools import *
+ 
+ # Constants for the level of explanation from the generation
+ # routines
+@@ -77,6 +79,7 @@
+ 
+         self.dontaudit = False
+ 
++        self.domains = None
+     def set_gen_refpol(self, if_set=None, perm_maps=None):
+         """Set whether reference policy interfaces are generated.
+ 
+@@ -151,8 +154,41 @@
+             rule = refpolicy.AVRule(av)
+             if self.dontaudit:
+                 rule.rule_type = rule.DONTAUDIT
++            rule.comment = ""
+             if self.explain:
+-                rule.comment = refpolicy.Comment(explain_access(av, verbosity=self.explain))
++                rule.comment = str(refpolicy.Comment(explain_access(av, verbosity=self.explain)))
++            if av.type == audit2why.ALLOW:
++                rule.comment += "#!!!! This avc is allowed in the current policy\n" 
++            if av.type == audit2why.DONTAUDIT:
++                rule.comment += "#!!!! This avc has a dontaudit rule in the current policy\n" 
++
++            if av.type == audit2why.BOOLEAN:
++                if len(av.bools) > 1:
++                    rule.comment += "#!!!! This avc can be allowed using one of the these booleans:\n#     %s\n" % ", ".join(map(lambda x: x[0], av.bools))
++                else:
++                    rule.comment += "#!!!! This avc can be allowed using the boolean '%s'\n" % av.bools[0][0]
++
++            if av.type == audit2why.CONSTRAINT:
++                rule.comment += "#!!!! This avc is a constraint violation.  You will need to add an attribute to either the source or target type to make it work.\n" 
++                rule.comment += "#Contraint rule: "
++
++            if av.type == audit2why.TERULE:
++                if "write" in av.perms:
++                    if "dir" in av.obj_class or "open" in av.perms:
++                        if not self.domains:
++                            self.domains = seinfo(ATTRIBUTE, name="domain")[0]["types"]
++                        types=[]
++                        
++                        try:
++                            for i in map(lambda x: x[TCONTEXT], sesearch([ALLOW], {SCONTEXT: av.src_type, CLASS: av.obj_class, PERMS: av.perms})):
++                                if i not in self.domains:
++                                    types.append(i)
++                            if len(types) == 1:
++                                rule.comment += "#!!!! The source type '%s' can write to a '%s' of the following type:\n# %s\n" % ( av.src_type, av.obj_class, ", ".join(types))
++                            elif len(types) >= 1:
++                                rule.comment += "#!!!! The source type '%s' can write to a '%s' of the following types:\n# %s\n" % ( av.src_type, av.obj_class, ", ".join(types))
++                        except:
++                            pass
+             self.module.children.append(rule)
+ 
+ 
+diff --exclude-from=exclude -N -u -r nsasepolgen/src/sepolgen/refparser.py policycoreutils-2.0.83/sepolgen-1.0.23/src/sepolgen/refparser.py
+--- nsasepolgen/src/sepolgen/refparser.py	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/sepolgen-1.0.23/src/sepolgen/refparser.py	2010-06-16 08:22:43.000000000 -0400
+@@ -1044,7 +1044,7 @@
+         # of misc_macros. We are just going to pretend that this is an interface
+         # to make the expansion work correctly.
+         can_exec = refpolicy.Interface("can_exec")
+-        av = access.AccessVector(["$1","$2","file","execute_no_trans","read",
++        av = access.AccessVector(["$1","$2","file","execute_no_trans","open", "read",
+                                   "getattr","lock","execute","ioctl"])
+ 
+         can_exec.children.append(refpolicy.AVRule(av))
+diff --exclude-from=exclude -N -u -r nsasepolgen/src/share/perm_map policycoreutils-2.0.83/sepolgen-1.0.23/src/share/perm_map
+--- nsasepolgen/src/share/perm_map	2010-05-19 14:45:51.000000000 -0400
++++ policycoreutils-2.0.83/sepolgen-1.0.23/src/share/perm_map	2010-06-16 08:22:43.000000000 -0400
+@@ -124,7 +124,7 @@
+           quotamod     w           1
+           quotaget     r           1
+ 
+-class file 20
++class file 21
+   execute_no_trans     r           1
+         entrypoint     r           1
+            execmod     n           1
+@@ -141,48 +141,50 @@
+             unlink     w           1
+               link     w           1
+             rename     w           5
+-           execute     r           100
++           execute     r           10
+             swapon     b           1
+            quotaon     b           1
+            mounton     b           1
++	      open     r	   1
+ 
+-class dir 22
+-          add_name     w           5
++class dir 23
++          add_name     w           1
+        remove_name     w           1
+           reparent     w           1
+             search     r           1
+              rmdir     b           1
+              ioctl     n           1
+-              read     r          10
+-             write     w          10
++              read     r           1
++             write     w           1
+             create     w           1
+-           getattr     r           7
+-           setattr     w           7
++           getattr     r           1
++           setattr     w           1
+               lock     n           1
+-       relabelfrom     r           10
+-         relabelto     w           10
++       relabelfrom     r           1
++         relabelto     w           1
+             append     w           1
+             unlink     w           1
+               link     w           1
+-            rename     w           5
++            rename     w           1
+            execute     r           1
+             swapon     b           1
+            quotaon     b           1
+            mounton     b           1
++	      open     r	   1
+ 
+ class fd 1
+                use     b           1
+ 
+-class lnk_file 17
++class lnk_file 18
+              ioctl     n           1
+-              read     r          10
+-             write     w          10
++              read     r           1
++             write     w           1
+             create     w           1
+-           getattr     r           7
+-           setattr     w           7
++           getattr     r           1
++           setattr     w           1
+               lock     n           1
+-       relabelfrom     r           10
+-         relabelto     w           10
++       relabelfrom     r           1
++         relabelto     w           1
+             append     w           1
+             unlink     w           1
+               link     w           1
+@@ -191,8 +193,9 @@
+             swapon     b           1
+            quotaon     b           1
+            mounton     b           1
++	      open     r	   1
+ 
+-class chr_file 20
++class chr_file 21
+   execute_no_trans     r           1
+         entrypoint     r           1
+            execmod     n           1
+@@ -213,8 +216,9 @@
+             swapon     b           1
+            quotaon     b           1
+            mounton     b           1
++	      open     r	   1
+ 
+-class blk_file 17
++class blk_file 18
+              ioctl     n           1
+               read     r          10
+              write     w          10
+@@ -232,8 +236,9 @@
+             swapon     b           1
+            quotaon     b           1
+            mounton     b           1
++	      open     r	   1
+ 
+-class sock_file 17
++class sock_file 18
+              ioctl     n           1
+               read     r          10
+              write     w          10
+@@ -251,8 +256,9 @@
+             swapon     b           1
+            quotaon     b           1
+            mounton     b           1
++	      open     r	   1
+ 
+-class fifo_file 17
++class fifo_file 18
+              ioctl     n           1
+               read     r          10
+              write     w          10
+@@ -270,6 +276,7 @@
+             swapon     b           1
+            quotaon     b           1
+            mounton     b           1
++	      open     r	   1
+ 
+ class socket 22
+              ioctl     n           1
