@@ -7,7 +7,7 @@
 Summary: SELinux policy core utilities
 Name:	 policycoreutils
 Version: 2.0.83
-Release: 19.1%{?dist}
+Release: 19.8%{?dist}
 License: GPLv2+
 Group:	 System Environment/Base
 Source:  http://www.nsa.gov/selinux/archives/policycoreutils-%{version}.tgz
@@ -25,6 +25,7 @@ Patch1:	 policycoreutils-po.patch
 Patch3:	 policycoreutils-gui.patch
 Patch4:	 policycoreutils-sepolgen.patch
 Patch5:	 policycoreutils-rhel6.patch
+Patch6:	 policycoreutils-tmpfix.patch
 Obsoletes: policycoreutils < 2.0.61-2
 
 %global python_sitelib %(%{__python} -c "from distutils.sysconfig import get_python_lib; print get_python_lib(1)")
@@ -64,6 +65,7 @@ context.
 %patch3 -p1 -b .gui
 %patch4 -p1 -b .sepolgen
 %patch5 -p1 -b .rhel6
+%patch6 -p1 -b .tmpfix
 
 %build
 make LSPP_PRIV=y LIBDIR="%{_libdir}" CFLAGS="%{optflags} -fPIE" LDFLAGS="-pie -Wl,-z,relro" all 
@@ -144,7 +146,6 @@ The policycoreutils-python package contains the management tools use to manage a
 %{_mandir}/man1/audit2allow.1*
 %{_mandir}/ru/man1/audit2allow.1*
 %{_mandir}/man1/audit2why.1*
-%{_mandir}/man5/sandbox.conf.5*
 %{_mandir}/man8/chcat.8*
 %{_mandir}/ru/man8/chcat.8*
 %{_mandir}/man8/sandbox.8*
@@ -159,7 +160,7 @@ exit 0
 Summary: SELinux sandbox utilities
 Group:	 System Environment/Base
 Requires: policycoreutils-python = %{version}-%{release} 
-Requires: xorg-x11-server-Xephyr
+Requires: xorg-x11-server-Xephyr /usr/bin/rsync
 Requires: matchbox-window-manager
 Requires(post): /sbin/chkconfig
 BuildRequires: libcap-ng-devel
@@ -170,6 +171,10 @@ The policycoreutils-python package contains the scripts to create graphical sand
 %files sandbox
 %defattr(-,root,root,-)
 %{_datadir}/sandbox/sandboxX.sh
+%{_datadir}/sandbox/start
+%attr(4755,root,root) %{_sbindir}/seunshare
+%{_mandir}/man8/seunshare.8*
+%{_mandir}/man5/sandbox.conf.5*
 
 %triggerin python -- selinux-policy
 selinuxenabled && [ -f /usr/share/selinux/devel/include/build.conf ] && /usr/bin/sepolgen-ifgen 2>/dev/null
@@ -242,7 +247,6 @@ rm -rf %{buildroot}
 /sbin/fixfiles
 /sbin/setfiles
 /sbin/load_policy
-%{_sbindir}/seunshare
 %{_sbindir}/genhomedircon
 %{_sbindir}/load_policy
 %{_sbindir}/restorecond
@@ -297,7 +301,6 @@ rm -rf %{buildroot}
 %{_mandir}/ru/man8/setsebool.8*
 %{_mandir}/man1/secon.1*
 %{_mandir}/ru/man1/secon.1*
-%{_mandir}/man8/seunshare.8*
 %{_mandir}/man8/genhomedircon.8*
 %doc %{_usr}/share/doc/%{name}-%{version}
 
@@ -319,6 +322,31 @@ fi
 exit 0
 
 %changelog
+* Wed Mar 30 2011 Dan Walsh <dwalsh@redhat.com> 2.0.83-19.8
+- Fix seunshare to work with /tmp content when SELinux context is not provided
+Resolves: #679689
+
+* Thu Mar 24 2011 Dan Walsh <dwalsh@redhat.com> 2.0.83-19.7
+- put back correct chcon
+- Latest fixes for seunshare 
+
+* Fri Mar 18 2011 Dan Walsh <dwalsh@redhat.com> 2.0.83-19.6
+- Fix rsync command to work if the directory is old.
+- Fix all tests
+Resolves: #679689
+
+* Wed Mar 16 2011 Dan Walsh <dwalsh@redhat.com> 2.0.83-19.5
+- Add requires rsync and  fix man page for seunshare
+
+* Tue Mar 15 2011 Dan Walsh <dwalsh@redhat.com> 2.0.83-19.4
+- fix to sandbox 
+  - Fix seunshare to use more secure handling of /tmp
+    - Rewrite seunshare to make sure /tmp is mounted stickybit owned by root
+   - Change to allow sandbox to run on nfs homedirs, add start python script
+   - change default location of HOMEDIR in sandbox to /tmp/.sandbox_home_*
+   - Move seunshare to sandbox package
+   - Fix sandbox to show correct types in  usage statement
+
 * Wed Aug 25 2010 Dan Walsh <dwalsh@redhat.com> 2.0.83-19.1
 - Fix sandbox -H and -T regression - again
 Resolves: #626404
